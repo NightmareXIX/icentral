@@ -11,6 +11,7 @@ import JobApplicationsPage from './pages/JobApplicationsPage';
 import AlumniVerificationPage from './pages/AlumniVerificationPage';
 import ModerationPage from './pages/ModerationPage';
 import NotificationsPage from './pages/NotificationsPage';
+import ChatPage from './pages/ChatPage';
 import SectionPlaceholderPage from './pages/SectionPlaceholderPage';
 import PostDetailsPage from './pages/PostDetailsPage';
 
@@ -30,6 +31,7 @@ function App() {
           <Route path="/job-portal/:postId/applications" element={<JobApplicationsPage />} />
           <Route path="/alumni-verification" element={<AlumniVerificationPage />} />
           <Route path="/notifications" element={<NotificationsPage />} />
+          <Route path="/chat" element={<ChatPage />} />
           <Route
             path="/events"
             element={

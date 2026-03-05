@@ -7,6 +7,7 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000
 
 const FEED_SECTIONS = [
   { key: 'home', label: 'Home', to: '/home', hint: 'Main feed', roles: 'all'},
+  { key: 'chat', label: 'Chat', to: '/chat', hint: 'Direct messages', roles: 'all'},
   { key: 'jobs', label: 'Job Portal', to: '/job-portal', hint: 'Career posts', roles: 'all'},
   { key: 'events', label: 'Events', to: '/events', hint: 'Campus events', roles: 'all'},
   { key: 'collaborate', label: 'Collaborate', to: '/collaborate', hint: 'Teams & invites', roles: 'all'},
@@ -268,6 +269,17 @@ export default function AppShell() {
         </nav>
 
         <div className="social-topbar-actions topbar-right">
+          <button
+            type="button"
+            className="topbar-circle-btn"
+            aria-label="Chat"
+            onClick={() => navigate('/chat')}
+          >
+            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+              <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8A2.5 2.5 0 0 1 17.5 16H10l-4.1 3.5c-.65.55-1.9.13-1.9-.74V16.7A2.5 2.5 0 0 1 4 13.5v-8z" />
+            </svg>
+          </button>
+
           <button
             type="button"
             className="topbar-circle-btn topbar-notif-btn"

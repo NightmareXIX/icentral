@@ -5,12 +5,13 @@ services:
   frontend:
     build: ./frontend
     ports:
-      - "5173:5173" # Binds Vite's container port to your computer's port
+      - "5173:5173"
     volumes:
       - ./frontend:/app
       - frontend_node_modules:/app/node_modules
     environment:
       - CHOKIDAR_USEPOLLING=true
+    command: sh -c "npm install --no-audit --no-fund && npm run dev -- --host"
     depends_on:
       - api-gateway
 
@@ -25,6 +26,13 @@ services:
       - POST_SERVICE_URL=http://post-service:3002
       - JOB_SERVICE_URL=http://job-service:3003
       - AUTH_SERVICE_URL=http://auth-service:3004
+      - CHAT_SERVICE_URL=http://chat-service:3005
+    depends_on:
+      - user-service
+      - post-service
+      - job-service
+      - auth-service
+      - chat-service
 
   # 3. User Service
   user-service:
@@ -65,6 +73,15 @@ services:
       - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
       - JWT_SECRET=${JWT_SECRET:-HelloWorldKey}
       - CORS_ORIGIN=http://localhost:5173
+
+  # 7. Chat Service (internal only, no public port)
+  chat-service:
+    build: ./services/chat-service
+    environment:
+      - PORT=3005
+      - SUPABASE_DB_URL=${SUPABASE_DB_URL}
+      - JWT_SECRET=${JWT_SECRET:-HelloWorldKey}
+      - CORS_ORIGIN=http://localhost:5173,http://localhost:5000
 
 volumes:
   frontend_node_modules:
