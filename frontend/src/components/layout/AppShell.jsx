@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/useAuth';
 import { getUnreadJobApplicationNotificationsForUser } from '../../utils/jobPortalStorage';
 
@@ -156,6 +156,7 @@ function SidebarItem({ item, canAccess }) {
 
 export default function AppShell() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { user, isAuthenticated, isModerator, clearAuthSession } = useAuth();
   const [recentNotifications, setRecentNotifications] = useState([]);
   const [loadingRecentNotifications, setLoadingRecentNotifications] = useState(true);
@@ -164,6 +165,7 @@ export default function AppShell() {
   const roleLabel = user?.role ? String(user.role) : 'guest';
   const normalizedRole = String(user?.role || '').toLowerCase();
   const isAlumni = normalizedRole === 'alumni';
+  const isChatRoute = location.pathname.startsWith('/chat');
   const initials = profileName
     .split(' ')
     .filter(Boolean)
@@ -313,87 +315,91 @@ export default function AppShell() {
         </div>
       </header>
 
-      <div className="social-layout">
-        <aside className="feed-sidebar feed-sidebar-left" aria-label="Feed sections">
-          <section className="panel sidebar-panel compact-panel">
-            <div className="session-card">
-              <p>
-                <span>Signed in as</span>
-                <strong>{profileName}</strong>
-              </p>
-              <p>
-                <span>Role</span>
-                <strong>{roleLabel}</strong>
-              </p>
-            </div>
-          </section>
-
-          <section className="panel sidebar-panel">
-            <div className="panel-header">
-              <div>
-                <p className="eyebrow">Explore</p>
-                <h3>Menu</h3>
+      <div className={`social-layout${isChatRoute ? ' is-chat-route' : ''}`}>
+        {!isChatRoute ? (
+          <aside className="feed-sidebar feed-sidebar-left" aria-label="Feed sections">
+            <section className="panel sidebar-panel compact-panel">
+              <div className="session-card">
+                <p>
+                  <span>Signed in as</span>
+                  <strong>{profileName}</strong>
+                </p>
+                <p>
+                  <span>Role</span>
+                  <strong>{roleLabel}</strong>
+                </p>
               </div>
-            </div>
+            </section>
 
-            <nav className="feed-menu-list">
-              {FEED_SECTIONS.map((item) => {
-                const canAccess = item.roles === 'all' || (Array.isArray(item.roles) && isModerator);
-                return <SidebarItem key={item.key} item={item} canAccess={canAccess} />;
-              })}
-            </nav>
-          </section>
-        </aside>
+            <section className="panel sidebar-panel">
+              <div className="panel-header">
+                <div>
+                  <p className="eyebrow">Explore</p>
+                  <h3>Menu</h3>
+                </div>
+              </div>
 
-        <main className="social-main-content">
+              <nav className="feed-menu-list">
+                {FEED_SECTIONS.map((item) => {
+                  const canAccess = item.roles === 'all' || (Array.isArray(item.roles) && isModerator);
+                  return <SidebarItem key={item.key} item={item} canAccess={canAccess} />;
+                })}
+              </nav>
+            </section>
+          </aside>
+        ) : null}
+
+        <main className={`social-main-content${isChatRoute ? ' is-chat-layout' : ''}`}>
           <Outlet />
         </main>
 
-        <aside className="feed-sidebar feed-sidebar-right" aria-label="Social sidebar">
-          <section className="panel sidebar-panel compact-panel">
-            <div className="panel-header">
-              <div>
-                <p className="eyebrow">Notifications</p>
-                <h3>Recent</h3>
+        {!isChatRoute ? (
+          <aside className="feed-sidebar feed-sidebar-right" aria-label="Social sidebar">
+            <section className="panel sidebar-panel compact-panel">
+              <div className="panel-header">
+                <div>
+                  <p className="eyebrow">Notifications</p>
+                  <h3>Recent</h3>
+                </div>
               </div>
-            </div>
 
-            <div className="contact-list">
-              {loadingRecentNotifications ? (
-                <div className="contact-item">
-                  <span className="contact-avatar contact-avatar-group" aria-hidden="true">..</span>
-                  <div>
-                    <strong>Loading notifications</strong>
-                    <small>Fetching latest updates</small>
-                  </div>
-                </div>
-              ) : recentNotifications.length === 0 ? (
-                <div className="contact-item">
-                  <span className="contact-avatar contact-avatar-group" aria-hidden="true">NA</span>
-                  <div>
-                    <strong>No recent notifications</strong>
-                    <small>You're all caught up</small>
-                  </div>
-                </div>
-              ) : (
-                recentNotifications.map((item) => (
-                  <button
-                    type="button"
-                    className={`contact-item contact-item-action notif-${item.kind || 'neutral'}`}
-                    key={item.id}
-                    onClick={() => navigate('/notifications')}
-                  >
-                    <span className="contact-avatar contact-avatar-group" aria-hidden="true">{item.badge}</span>
+              <div className="contact-list">
+                {loadingRecentNotifications ? (
+                  <div className="contact-item">
+                    <span className="contact-avatar contact-avatar-group" aria-hidden="true">..</span>
                     <div>
-                      <strong>{item.title}</strong>
-                      <small>{item.subtitle}</small>
+                      <strong>Loading notifications</strong>
+                      <small>Fetching latest updates</small>
                     </div>
-                  </button>
-                ))
-              )}
-            </div>
-          </section>
-        </aside>
+                  </div>
+                ) : recentNotifications.length === 0 ? (
+                  <div className="contact-item">
+                    <span className="contact-avatar contact-avatar-group" aria-hidden="true">NA</span>
+                    <div>
+                      <strong>No recent notifications</strong>
+                      <small>You're all caught up</small>
+                    </div>
+                  </div>
+                ) : (
+                  recentNotifications.map((item) => (
+                    <button
+                      type="button"
+                      className={`contact-item contact-item-action notif-${item.kind || 'neutral'}`}
+                      key={item.id}
+                      onClick={() => navigate('/notifications')}
+                    >
+                      <span className="contact-avatar contact-avatar-group" aria-hidden="true">{item.badge}</span>
+                      <div>
+                        <strong>{item.title}</strong>
+                        <small>{item.subtitle}</small>
+                      </div>
+                    </button>
+                  ))
+                )}
+              </div>
+            </section>
+          </aside>
+        ) : null}
       </div>
     </div>
   );
