@@ -330,6 +330,7 @@
   display: flex;
   align-items: center;
   gap: 9px;
+  margin: 0;
   min-width: 0;
   padding: 0 13px;
   min-height: 42px;
@@ -377,6 +378,51 @@
 
 .topbar-search input::placeholder {
   color: #9eb4c8 !important;
+}
+
+.topbar-search-submit {
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: 0;
+  display: inline-grid;
+  place-items: center;
+  background: rgba(98, 149, 255, 0.22);
+  color: #d8ebff;
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition: transform 120ms ease, background-color 120ms ease;
+}
+
+.topbar-search-submit:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: rgba(98, 149, 255, 0.34);
+}
+
+.topbar-search-submit:disabled {
+  opacity: 0.8;
+  cursor: wait;
+}
+
+.topbar-search-submit svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
+.topbar-search-spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(216, 235, 255, 0.35);
+  border-top-color: #d8ebff;
+  animation: searchSpin 640ms linear infinite;
+}
+
+@keyframes searchSpin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .topbar-nav {
@@ -962,6 +1008,59 @@
 .story-fallback-bg {
   width: 100%;
   height: 100%;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at 20% 18%, rgba(58, 138, 255, 0.28), transparent 44%),
+    linear-gradient(180deg, rgba(34, 40, 49, 0.95), rgba(24, 28, 34, 0.98));
+}
+
+.story-fallback-icon-shell {
+  width: clamp(38px, 30%, 52px);
+  aspect-ratio: 1 / 1;
+  border-radius: 14px;
+  border: 1px solid rgba(196, 230, 255, 0.34);
+  background: rgba(12, 24, 34, 0.56);
+  display: grid;
+  place-items: center;
+  box-shadow: inset 0 0 0 1px rgba(9, 18, 26, 0.42), 0 8px 20px rgba(0, 0, 0, 0.22);
+}
+
+.story-fallback-icon {
+  width: 54%;
+  height: 54%;
+  color: #dcf4ff;
+}
+
+.story-fallback-announcement {
+  background:
+    radial-gradient(circle at 15% 20%, rgba(255, 183, 3, 0.26), transparent 46%),
+    radial-gradient(circle at 82% 12%, rgba(255, 84, 112, 0.18), transparent 42%),
+    linear-gradient(180deg, rgba(40, 34, 27, 0.96), rgba(28, 23, 19, 0.98));
+}
+
+.story-fallback-event {
+  background:
+    radial-gradient(circle at 16% 20%, rgba(0, 209, 178, 0.24), transparent 44%),
+    radial-gradient(circle at 84% 14%, rgba(67, 240, 213, 0.16), transparent 44%),
+    linear-gradient(180deg, rgba(26, 39, 38, 0.95), rgba(18, 28, 27, 0.98));
+}
+
+.story-fallback-job {
+  background:
+    radial-gradient(circle at 14% 18%, rgba(101, 165, 255, 0.26), transparent 42%),
+    radial-gradient(circle at 86% 16%, rgba(127, 233, 255, 0.14), transparent 46%),
+    linear-gradient(180deg, rgba(28, 35, 48, 0.95), rgba(19, 25, 36, 0.98));
+}
+
+.story-fallback-discussion {
+  background:
+    radial-gradient(circle at 14% 18%, rgba(188, 145, 255, 0.22), transparent 44%),
+    radial-gradient(circle at 86% 20%, rgba(255, 147, 197, 0.14), transparent 44%),
+    linear-gradient(180deg, rgba(35, 30, 45, 0.95), rgba(24, 20, 33, 0.98));
+}
+
+.story-fallback-default {
   background:
     radial-gradient(circle at 20% 18%, rgba(58, 138, 255, 0.28), transparent 44%),
     linear-gradient(180deg, rgba(34, 40, 49, 0.95), rgba(24, 28, 34, 0.98));
@@ -1534,6 +1633,29 @@
   display: grid;
   grid-template-columns: 1fr;
   gap: 12px;
+}
+
+.search-query-line {
+  margin: 0 0 12px;
+  color: #bed5e3;
+}
+
+.search-query-line strong {
+  color: #ecf8ff;
+}
+
+.search-results-grid .search-result-card {
+  animation-delay: calc(var(--card-index, 0) * 14ms);
+}
+
+.search-load-more-row {
+  display: flex;
+  justify-content: center;
+  margin-top: 6px;
+}
+
+.search-load-more-btn {
+  min-width: 150px;
 }
 
 .feed-card {

@@ -2,6 +2,7 @@
 -- Run this in Supabase SQL editor (adjust schema if you use a non-public schema).
 
 create extension if not exists pgcrypto;
+create extension if not exists pg_trgm;
 
 create table if not exists public.posts (
     id uuid primary key default gen_random_uuid(),
@@ -92,3 +93,16 @@ create index if not exists idx_post_comments_post_created_at
 
 create index if not exists idx_post_comments_author_id
     on public.post_comments (author_id);
+
+-- Search performance indexes (used by GET /search in post-service).
+create index if not exists idx_posts_search_fts
+    on public.posts
+    using gin (to_tsvector('english', coalesce(title, '') || ' ' || coalesce(summary, '')));
+
+create index if not exists idx_tags_name_trgm
+    on public.tags
+    using gin (name gin_trgm_ops);
+
+create index if not exists idx_tags_slug_trgm
+    on public.tags
+    using gin (slug gin_trgm_ops);

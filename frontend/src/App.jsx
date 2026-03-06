@@ -14,6 +14,7 @@ import NotificationsPage from './pages/NotificationsPage';
 import ChatPage from './pages/ChatPage';
 import SectionPlaceholderPage from './pages/SectionPlaceholderPage';
 import PostDetailsPage from './pages/PostDetailsPage';
+import SearchPage from './pages/SearchPage';
 
 function App() {
   return (
@@ -25,6 +26,7 @@ function App() {
         <Route element={<AppShell />}>
           <Route path="/" element={<Navigate to="/home" replace />} />
           <Route path="/home" element={<HomeFeedPage />} />
+          <Route path="/search" element={<SearchPage />} />
           <Route path="/posts/:postId" element={<PostDetailsPage />} />
           <Route path="/job-portal" element={<JobPortalPage />} />
           <Route path="/job-portal/:postId/apply" element={<JobApplicationPage />} />

@@ -17,10 +17,21 @@ function buildServiceProxy(target, extraOptions = {}) {
     });
 }
 
-app.use('/users', buildServiceProxy(process.env.USER_SERVICE_URL || 'http://localhost:3001'));
-app.use('/posts', buildServiceProxy(process.env.POST_SERVICE_URL || 'http://localhost:3002'));
-app.use('/jobs', buildServiceProxy(process.env.JOB_SERVICE_URL || 'http://localhost:3003'));
-app.use('/auth', buildServiceProxy(process.env.AUTH_SERVICE_URL || 'http://localhost:3004'));
+const userServiceUrl = process.env.USER_SERVICE_URL || 'http://localhost:3001';
+const postServiceUrl = process.env.POST_SERVICE_URL || 'http://localhost:3002';
+const jobServiceUrl = process.env.JOB_SERVICE_URL || 'http://localhost:3003';
+const authServiceUrl = process.env.AUTH_SERVICE_URL || 'http://localhost:3004';
+
+app.get('/posts/search', buildServiceProxy(postServiceUrl, {
+    pathRewrite: {
+        '^/posts/search$': '/search',
+    },
+}));
+
+app.use('/users', buildServiceProxy(userServiceUrl));
+app.use('/posts', buildServiceProxy(postServiceUrl));
+app.use('/jobs', buildServiceProxy(jobServiceUrl));
+app.use('/auth', buildServiceProxy(authServiceUrl));
 
 const chatProxy = buildServiceProxy(
     process.env.CHAT_SERVICE_URL || 'http://localhost:3005',

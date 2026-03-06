@@ -1,6 +1,8 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
+import { getPostAuthorDisplayName } from '../utils/postAuthor';
+import { getPostTypeIconKey, getPostTypeIconPaths } from '../utils/postTypeIcon';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
 
@@ -139,6 +141,16 @@ function formatCompactCount(value) {
   const numericValue = Number(value);
   if (!Number.isFinite(numericValue)) return '0';
   return compactCountFormatter.format(Math.trunc(numericValue));
+}
+
+function getPostImageUrl(post) {
+  if (!Array.isArray(post?.refs)) return '';
+  const imageRef = post.refs.find((ref) => (
+    ref?.service === 'image-upload'
+    && typeof ref?.metadata?.imageDataUrl === 'string'
+    && ref.metadata.imageDataUrl.trim()
+  ));
+  return imageRef?.metadata?.imageDataUrl?.trim() || '';
 }
 
 export default function HomeFeedPage() {
@@ -649,15 +661,15 @@ export default function HomeFeedPage() {
       })
       .slice(0, 8)
       .map((item, index) => {
-        const imageRef = Array.isArray(item.refs)
-          ? item.refs.find((ref) => ref?.service === 'image-upload' && ref?.metadata?.imageDataUrl)
-          : null;
+        const typeIconKey = getPostTypeIconKey(item?.type);
         return {
           id: item.id || '',
           key: item.id || `top-post-${index}`,
-          imageUrl: imageRef?.metadata?.imageDataUrl || '',
+          imageUrl: getPostImageUrl(item),
           title: item.title || `${toTitleCase(item.type || 'post')} update`,
-          authorLabel: item.authorId ? `Author ${String(item.authorId).slice(0, 8)}` : 'Community',
+          authorLabel: getPostAuthorDisplayName(item),
+          typeIconKey,
+          typeIconPaths: getPostTypeIconPaths(item?.type),
         };
       })
   ), [feedItems]);
@@ -866,7 +878,23 @@ export default function HomeFeedPage() {
               {story.imageUrl ? (
                 <img src={story.imageUrl} alt={story.title} loading="lazy" />
               ) : (
-                <div className="story-fallback-bg" aria-hidden="true" />
+                <div className={`story-fallback-bg story-fallback-${story.typeIconKey}`} aria-hidden="true">
+                  <span className="story-fallback-icon-shell">
+                    <svg
+                      className="story-fallback-icon"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.9"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      {story.typeIconPaths.map((command, pathIndex) => (
+                        <path key={`${story.typeIconKey}-${pathIndex}`} d={command} />
+                      ))}
+                    </svg>
+                  </span>
+                </div>
               )}
               <div className="story-overlay">
                 <strong>{story.title}</strong>
@@ -955,196 +983,197 @@ export default function HomeFeedPage() {
           </div>
         ) : (
           <div className="feed-grid">
-            {feedItems.map((item, index) => (
-              <article
-                className="feed-card social-post-card feed-card-linkable"
-                key={item.id}
-                style={{ '--card-index': index }}
-                role="link"
-                tabIndex={0}
-                onClick={(event) => handleCardNavigation(event, item.id)}
-                onKeyDown={(event) => handleCardKeyNavigation(event, item.id)}
-              >
-                <div className="social-post-header">
-                  <div className="post-author-chip">
-                    <span className="post-avatar">{(item.type || 'P').slice(0, 1)}</span>
-                    <div>
-                      <strong>{item.title || `${item.type} update`}</strong>
-                      <small>{formatDate(item.createdAt)}</small>
+            {feedItems.map((item, index) => {
+              const postImageUrl = getPostImageUrl(item);
+              const authorLabel = getPostAuthorDisplayName(item);
+
+              return (
+                <article
+                  className="feed-card social-post-card feed-card-linkable"
+                  key={item.id}
+                  style={{ '--card-index': index }}
+                  role="link"
+                  tabIndex={0}
+                  onClick={(event) => handleCardNavigation(event, item.id)}
+                  onKeyDown={(event) => handleCardKeyNavigation(event, item.id)}
+                >
+                  <div className="social-post-header">
+                    <div className="post-author-chip">
+                      <span className="post-avatar">{(item.type || 'P').slice(0, 1)}</span>
+                      <div>
+                        <strong>{item.title || `${item.type} update`}</strong>
+                        <small>{formatDate(item.createdAt)}</small>
+                      </div>
+                    </div>
+
+                    <div className="pill-row">
+                      <span className={`pill tone-${statusTone(item.status)}`}>{item.status || 'unknown'}</span>
+                      {item.pinned && <span className="pill tone-pin">Pinned</span>}
                     </div>
                   </div>
 
-                  <div className="pill-row">
-                    <span className={`pill tone-${statusTone(item.status)}`}>{item.status || 'unknown'}</span>
-                    {item.pinned && <span className="pill tone-pin">Pinned</span>}
-                  </div>
-                </div>
-
-                {Array.isArray(item.refs) && item.refs.length > 0 && (() => {
-                  const imageRef = item.refs.find((ref) => ref?.service === 'image-upload' && ref?.metadata?.imageDataUrl);
-                  if (!imageRef) return null;
-                  return (
+                  {postImageUrl && (
                     <div className="feed-image-wrap">
                       <img
-                        src={imageRef.metadata.imageDataUrl}
+                        src={postImageUrl}
                         alt={item.title || 'Post image'}
                         loading="lazy"
                       />
                     </div>
-                  );
-                })()}
+                  )}
 
-                <p className="feed-summary">{item.summary || 'No summary provided.'}</p>
+                  <p className="feed-summary">{item.summary || 'No summary provided.'}</p>
 
-                {Array.isArray(item.tags) && item.tags.length > 0 && (
-                  <ul className="mini-tag-row" aria-label="Post tags">
-                    {item.tags.map((tag) => (
-                      <li key={`${item.id}-${tag.id}`}>
-                        <button type="button" className="mini-tag" onClick={() => updateFilter('tag', tag.id)}>
-                          #{tag.name}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                  {Array.isArray(item.tags) && item.tags.length > 0 && (
+                    <ul className="mini-tag-row" aria-label="Post tags">
+                      {item.tags.map((tag) => (
+                        <li key={`${item.id}-${tag.id}`}>
+                          <button type="button" className="mini-tag" onClick={() => updateFilter('tag', tag.id)}>
+                            #{tag.name}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
 
-                <div className="post-utility-bar">
-                  <span className="pill">{item.type || 'UNKNOWN'}</span>
-                  {item.expiresAt && <span className="pill">Expires {formatDate(item.expiresAt)}</span>}
-                  {item.authorId && <span className="pill monospace">Author {String(item.authorId).slice(0, 8)}</span>}
-                </div>
-
-                <div className="feed-card-actions social-actions reddit-action-row">
-                  <div className="reddit-vote-group" role="group" aria-label={`Voting controls for ${item.title || 'post'}`}>
-                    <button
-                      className={`reddit-action-btn vote-btn ${item.userVote === 'up' ? 'is-active' : ''}`}
-                      type="button"
-                      aria-label="Upvote"
-                      aria-pressed={item.userVote === 'up'}
-                      disabled={actionBusyPostId === item.id || item.status === 'archived'}
-                      onClick={() => handleVote(item, 'up')}
-                    >
-                      <svg className="reddit-icon" viewBox="0 0 20 20" aria-hidden="true">
-                        <polyline points="6 11 10 7 14 11" />
-                        <line x1="10" y1="7" x2="10" y2="14" />
-                      </svg>
-                      <span className="sr-only">Upvote</span>
-                    </button>
-                    <span className="reddit-vote-count" aria-live="polite">{formatCompactCount(getBaseVoteScore(item))}</span>
-                    <button
-                      className={`reddit-action-btn vote-btn ${item.userVote === 'down' ? 'is-active' : ''}`}
-                      type="button"
-                      aria-label="Downvote"
-                      aria-pressed={item.userVote === 'down'}
-                      disabled={actionBusyPostId === item.id || item.status === 'archived'}
-                      onClick={() => handleVote(item, 'down')}
-                    >
-                      <svg className="reddit-icon" viewBox="0 0 20 20" aria-hidden="true">
-                        <polyline points="6 9 10 13 14 9" />
-                        <line x1="10" y1="6" x2="10" y2="13" />
-                      </svg>
-                      <span className="sr-only">Downvote</span>
-                    </button>
+                  <div className="post-utility-bar">
+                    <span className="pill">{item.type || 'UNKNOWN'}</span>
+                    {item.expiresAt && <span className="pill">Expires {formatDate(item.expiresAt)}</span>}
+                    <span className="pill" title={authorLabel}>{authorLabel}</span>
                   </div>
 
-                  <button
-                    className="reddit-action-btn reddit-metric-btn"
-                    type="button"
-                    aria-label={`Comments ${getCommentCount(item)}`}
-                    aria-expanded={openCommentsPostId === item.id}
-                    onClick={() => toggleComments(item)}
-                  >
-                    <svg className="reddit-icon" viewBox="0 0 20 20" aria-hidden="true">
-                      <path d="M4.5 4.5h11a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H9l-3.5 3v-3H4.5a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2Z" />
-                    </svg>
-                    <span className="reddit-action-count">{formatCompactCount(getCommentCount(item))}</span>
-                    <span className="sr-only">Comments</span>
-                  </button>
-
-                  {(isModerator || isPostOwner(item)) && (
-                    <button
-                      className="reddit-action-btn archive-action"
-                      type="button"
-                      disabled={actionBusyPostId === item.id || !isAuthenticated || item.status === 'archived'}
-                      onClick={() => patchPost(item.id, { archive: true }, 'Post archived.')}
-                    >
-                      Archive
-                    </button>
-                  )}
-
-                  {(isModerator || isPostOwner(item)) && (
-                    <button
-                      className="reddit-action-btn delete-action"
-                      type="button"
-                      disabled={actionBusyPostId === item.id || !isAuthenticated}
-                      onClick={() => deletePost(item)}
-                    >
-                      Delete
-                    </button>
-                  )}
-                </div>
-
-                {openCommentsPostId === item.id && (
-                  <section className="post-comments-panel" aria-label="Comments section">
-                    <div className="post-comments-header">
-                      <h5>Comments</h5>
+                  <div className="feed-card-actions social-actions reddit-action-row">
+                    <div className="reddit-vote-group" role="group" aria-label={`Voting controls for ${item.title || 'post'}`}>
                       <button
-                        className="btn btn-soft"
+                        className={`reddit-action-btn vote-btn ${item.userVote === 'up' ? 'is-active' : ''}`}
                         type="button"
-                        disabled={commentsLoadingPostId === item.id}
-                        onClick={() => loadComments(item.id, { openAfterLoad: false })}
+                        aria-label="Upvote"
+                        aria-pressed={item.userVote === 'up'}
+                        disabled={actionBusyPostId === item.id || item.status === 'archived'}
+                        onClick={() => handleVote(item, 'up')}
                       >
-                        {commentsLoadingPostId === item.id ? 'Refreshing...' : 'Refresh'}
+                        <svg className="reddit-icon" viewBox="0 0 20 20" aria-hidden="true">
+                          <polyline points="6 11 10 7 14 11" />
+                          <line x1="10" y1="7" x2="10" y2="14" />
+                        </svg>
+                        <span className="sr-only">Upvote</span>
+                      </button>
+                      <span className="reddit-vote-count" aria-live="polite">{formatCompactCount(getBaseVoteScore(item))}</span>
+                      <button
+                        className={`reddit-action-btn vote-btn ${item.userVote === 'down' ? 'is-active' : ''}`}
+                        type="button"
+                        aria-label="Downvote"
+                        aria-pressed={item.userVote === 'down'}
+                        disabled={actionBusyPostId === item.id || item.status === 'archived'}
+                        onClick={() => handleVote(item, 'down')}
+                      >
+                        <svg className="reddit-icon" viewBox="0 0 20 20" aria-hidden="true">
+                          <polyline points="6 9 10 13 14 9" />
+                          <line x1="10" y1="6" x2="10" y2="13" />
+                        </svg>
+                        <span className="sr-only">Downvote</span>
                       </button>
                     </div>
 
-                    {commentsLoadingPostId === item.id ? (
-                      <p className="post-comments-hint">Loading comments...</p>
-                    ) : Array.isArray(commentsByPostId[item.id]) && commentsByPostId[item.id].length > 0 ? (
-                      <ul className="post-comments-list" aria-label="Post comments">
-                        {commentsByPostId[item.id].map((comment) => (
-                          <li key={comment.id} className="post-comment-item">
-                            <div className="post-comment-head">
-                              <strong>{comment.author?.fullName || comment.author?.email || `User ${String(comment.authorId || '').slice(0, 8)}`}</strong>
-                              <small>{formatDate(comment.createdAt)}</small>
-                            </div>
-                            <p>{comment.content}</p>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="post-comments-hint">No comments yet. Start the discussion.</p>
+                    <button
+                      className="reddit-action-btn reddit-metric-btn"
+                      type="button"
+                      aria-label={`Comments ${getCommentCount(item)}`}
+                      aria-expanded={openCommentsPostId === item.id}
+                      onClick={() => toggleComments(item)}
+                    >
+                      <svg className="reddit-icon" viewBox="0 0 20 20" aria-hidden="true">
+                        <path d="M4.5 4.5h11a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H9l-3.5 3v-3H4.5a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2Z" />
+                      </svg>
+                      <span className="reddit-action-count">{formatCompactCount(getCommentCount(item))}</span>
+                      <span className="sr-only">Comments</span>
+                    </button>
+
+                    {(isModerator || isPostOwner(item)) && (
+                      <button
+                        className="reddit-action-btn archive-action"
+                        type="button"
+                        disabled={actionBusyPostId === item.id || !isAuthenticated || item.status === 'archived'}
+                        onClick={() => patchPost(item.id, { archive: true }, 'Post archived.')}
+                      >
+                        Archive
+                      </button>
                     )}
 
-                    <form
-                      className="post-comment-form"
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        submitComment(item.id);
-                      }}
-                    >
-                      <textarea
-                        rows={2}
-                        placeholder={isAuthenticated ? 'Write a comment...' : 'Sign in to write a comment'}
-                        value={commentDrafts[item.id] || ''}
-                        onChange={(event) => setCommentDrafts((prev) => ({ ...prev, [item.id]: event.target.value }))}
-                        disabled={commentsSubmittingPostId === item.id || !isAuthenticated}
-                      />
-                      <div className="post-comment-form-actions">
+                    {(isModerator || isPostOwner(item)) && (
+                      <button
+                        className="reddit-action-btn delete-action"
+                        type="button"
+                        disabled={actionBusyPostId === item.id || !isAuthenticated}
+                        onClick={() => deletePost(item)}
+                      >
+                        Delete
+                      </button>
+                    )}
+                  </div>
+
+                  {openCommentsPostId === item.id && (
+                    <section className="post-comments-panel" aria-label="Comments section">
+                      <div className="post-comments-header">
+                        <h5>Comments</h5>
                         <button
-                          className="btn btn-primary-solid"
-                          type="submit"
-                          disabled={commentsSubmittingPostId === item.id || !isAuthenticated || !(commentDrafts[item.id] || '').trim()}
+                          className="btn btn-soft"
+                          type="button"
+                          disabled={commentsLoadingPostId === item.id}
+                          onClick={() => loadComments(item.id, { openAfterLoad: false })}
                         >
-                          {commentsSubmittingPostId === item.id ? 'Posting...' : 'Post Comment'}
+                          {commentsLoadingPostId === item.id ? 'Refreshing...' : 'Refresh'}
                         </button>
                       </div>
-                    </form>
-                  </section>
-                )}
 
-              </article>
-            ))}
+                      {commentsLoadingPostId === item.id ? (
+                        <p className="post-comments-hint">Loading comments...</p>
+                      ) : Array.isArray(commentsByPostId[item.id]) && commentsByPostId[item.id].length > 0 ? (
+                        <ul className="post-comments-list" aria-label="Post comments">
+                          {commentsByPostId[item.id].map((comment) => (
+                            <li key={comment.id} className="post-comment-item">
+                              <div className="post-comment-head">
+                                <strong>{comment.author?.fullName || comment.author?.email || `User ${String(comment.authorId || '').slice(0, 8)}`}</strong>
+                                <small>{formatDate(comment.createdAt)}</small>
+                              </div>
+                              <p>{comment.content}</p>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="post-comments-hint">No comments yet. Start the discussion.</p>
+                      )}
+
+                      <form
+                        className="post-comment-form"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          submitComment(item.id);
+                        }}
+                      >
+                        <textarea
+                          rows={2}
+                          placeholder={isAuthenticated ? 'Write a comment...' : 'Sign in to write a comment'}
+                          value={commentDrafts[item.id] || ''}
+                          onChange={(event) => setCommentDrafts((prev) => ({ ...prev, [item.id]: event.target.value }))}
+                          disabled={commentsSubmittingPostId === item.id || !isAuthenticated}
+                        />
+                        <div className="post-comment-form-actions">
+                          <button
+                            className="btn btn-primary-solid"
+                            type="submit"
+                            disabled={commentsSubmittingPostId === item.id || !isAuthenticated || !(commentDrafts[item.id] || '').trim()}
+                          >
+                            {commentsSubmittingPostId === item.id ? 'Posting...' : 'Post Comment'}
+                          </button>
+                        </div>
+                      </form>
+                    </section>
+                  )}
+
+                </article>
+              );
+            })}
           </div>
         )}
       </section>

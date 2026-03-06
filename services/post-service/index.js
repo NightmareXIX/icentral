@@ -1,11 +1,16 @@
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
 const jwt = require('jsonwebtoken');
+const { query: searchQuery, isDbConfigured: isSearchDbConfigured, closePool: closeSearchDbPool } = require('./db');
 
 const app = express();
 app.use(express.json({ limit: '5mb' }));
 
 const PORT = Number(process.env.PORT) || 3002;
+const SEARCH_DEFAULT_LIMIT = 20;
+const SEARCH_MAX_LIMIT = 50;
+const SEARCH_MIN_QUERY_LENGTH = 2;
+const SEARCH_MAX_QUERY_LENGTH = 80;
 
 const CONFIG = {
     supabaseUrl: process.env.SUPABASE_URL,
@@ -26,6 +31,23 @@ const CONFIG = {
     archiveIntervalMs: Number(process.env.POST_ARCHIVE_INTERVAL_MS) || 0,
     jwtSecret: process.env.JWT_SECRET || 'HelloWorldKey',
 };
+
+function quoteIdentifier(value, label) {
+    const normalized = String(value || '').trim();
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(normalized)) {
+        throw new Error(`Invalid SQL identifier for ${label}: "${value}"`);
+    }
+    return `"${normalized}"`;
+}
+
+const DB_TABLE_IDENTIFIERS = (() => {
+    const schema = quoteIdentifier(CONFIG.schema, 'schema');
+    return {
+        posts: `${schema}.${quoteIdentifier(CONFIG.tables.posts, 'posts table')}`,
+        tags: `${schema}.${quoteIdentifier(CONFIG.tables.tags, 'tags table')}`,
+        postTags: `${schema}.${quoteIdentifier(CONFIG.tables.postTags, 'post_tags table')}`,
+    };
+})();
 
 const supabase = (CONFIG.supabaseUrl && CONFIG.supabaseKey)
     ? createClient(CONFIG.supabaseUrl, CONFIG.supabaseKey, {
@@ -76,6 +98,95 @@ function sanitizeSearchTerm(term) {
         .trim()
         .replace(/[(),]/g, ' ')
         .replace(/\s+/g, ' ');
+}
+
+function normalizeSearchQuery(value) {
+    return String(value || '')
+        .trim()
+        .replace(/\s+/g, ' ');
+}
+
+function encodeSearchCursor({ rank, createdAt, id }) {
+    const payload = {
+        v: 1,
+        rank: Number(rank),
+        createdAt: createdAt instanceof Date ? createdAt.toISOString() : new Date(createdAt).toISOString(),
+        id: String(id),
+    };
+    return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+}
+
+function decodeSearchCursor(value) {
+    if (!value) return { value: null };
+
+    const raw = String(value).trim();
+    if (!raw) return { value: null };
+
+    let decodedText = '';
+    try {
+        decodedText = Buffer.from(raw, 'base64url').toString('utf8');
+    } catch {
+        try {
+            decodedText = Buffer.from(raw, 'base64').toString('utf8');
+        } catch {
+            return { error: 'cursor is invalid' };
+        }
+    }
+
+    try {
+        const parsed = JSON.parse(decodedText);
+        const rank = Number(parsed?.rank);
+        const createdAt = new Date(parsed?.createdAt);
+        const id = normalizeText(parsed?.id);
+
+        if (!Number.isFinite(rank)) {
+            return { error: 'cursor is invalid' };
+        }
+
+        if (Number.isNaN(createdAt.getTime())) {
+            return { error: 'cursor is invalid' };
+        }
+
+        if (!id) {
+            return { error: 'cursor is invalid' };
+        }
+
+        return {
+            value: {
+                rank,
+                createdAt: createdAt.toISOString(),
+                id,
+            },
+        };
+    } catch {
+        return { error: 'cursor is invalid' };
+    }
+}
+
+function parseSearchRequest(query = {}) {
+    const errors = [];
+    const q = normalizeSearchQuery(query.q);
+    const limit = parseIntInRange(query.limit, SEARCH_DEFAULT_LIMIT, 1, SEARCH_MAX_LIMIT);
+    const cursorResult = decodeSearchCursor(query.cursor);
+
+    if (!q) {
+        errors.push('q is required');
+    } else if (q.length < SEARCH_MIN_QUERY_LENGTH) {
+        errors.push(`q must be at least ${SEARCH_MIN_QUERY_LENGTH} characters`);
+    } else if (q.length > SEARCH_MAX_QUERY_LENGTH) {
+        errors.push(`q must be at most ${SEARCH_MAX_QUERY_LENGTH} characters`);
+    }
+
+    if (cursorResult.error) {
+        errors.push(cursorResult.error);
+    }
+
+    return {
+        q,
+        limit,
+        cursor: cursorResult.value || null,
+        errors,
+    };
 }
 
 function pickDefined(fields) {
@@ -172,6 +283,13 @@ function dbUnavailable(res) {
     });
 }
 
+function searchDbUnavailable(res) {
+    return res.status(503).json({
+        error: 'Post search database is not configured',
+        requiredEnv: ['SUPABASE_DB_URL'],
+    });
+}
+
 function socialSchemaError(res) {
     return res.status(500).json({
         error: `Missing social tables. Run services/post-service/schema.sql first.`,
@@ -181,6 +299,13 @@ function socialSchemaError(res) {
 function ensureDb(req, res, next) {
     if (!isSupabaseConfigured()) {
         return dbUnavailable(res);
+    }
+    return next();
+}
+
+function ensureSearchDb(req, res, next) {
+    if (!isSearchDbConfigured()) {
+        return searchDbUnavailable(res);
     }
     return next();
 }
@@ -749,6 +874,184 @@ async function getPostById(postId, options = {}) {
     return enriched || null;
 }
 
+async function getPostsByIdsOrdered(postIds = []) {
+    if (!postIds.length) return [];
+
+    const { data, error } = await supabase
+        .from(CONFIG.tables.posts)
+        .select('*')
+        .in('id', postIds);
+
+    if (error) {
+        throw error;
+    }
+
+    const rowMap = new Map((data || []).map((row) => [String(row.id), row]));
+    return postIds
+        .map((id) => rowMap.get(String(id)))
+        .filter(Boolean);
+}
+
+function mapSearchResultItem(post = {}) {
+    const score = Number.isFinite(Number(post.score)) ? Math.trunc(Number(post.score)) : 0;
+    const voteScore = Number.isFinite(Number(post.voteScore)) ? Math.trunc(Number(post.voteScore)) : score;
+    const upvoteCount = Number.isFinite(Number(post.upvoteCount)) ? Math.max(0, Math.trunc(Number(post.upvoteCount))) : 0;
+    const downvoteCount = Number.isFinite(Number(post.downvoteCount)) ? Math.max(0, Math.trunc(Number(post.downvoteCount))) : 0;
+    const commentCount = Number.isFinite(Number(post.commentCount)) ? Math.max(0, Math.trunc(Number(post.commentCount))) : 0;
+
+    return {
+        id: post.id,
+        type: post.type || null,
+        title: post.title || null,
+        summary: post.summary || null,
+        authorId: post.authorId || null,
+        authorName: post.authorName || null,
+        author: post.author
+            ? {
+                id: post.author.id || null,
+                fullName: post.author.fullName || null,
+            }
+            : null,
+        status: post.status || null,
+        pinned: Boolean(post.pinned),
+        expiresAt: post.expiresAt || null,
+        createdAt: post.createdAt || null,
+        updatedAt: post.updatedAt || null,
+        tags: Array.isArray(post.tags)
+            ? post.tags.map((tag) => ({
+                id: tag.id,
+                name: tag.name,
+                slug: tag.slug,
+            }))
+            : [],
+        refs: Array.isArray(post.refs)
+            ? post.refs.map((ref) => ({
+                service: ref.service,
+                entityId: ref.entityId,
+                metadata: ref.metadata || {},
+                createdAt: ref.createdAt || null,
+            }))
+            : [],
+        score,
+        voteScore,
+        upvoteCount,
+        downvoteCount,
+        commentCount,
+        commentsCount: commentCount,
+        userVote: post.userVote === 'up' || post.userVote === 'down' ? post.userVote : null,
+    };
+}
+
+function buildSearchPostsSql({ hasCursor }) {
+    const cursorFilter = hasCursor
+        ? `
+    AND (
+        rank < $2
+        OR (rank = $2 AND created_at < $3::timestamptz)
+        OR (rank = $2 AND created_at = $3::timestamptz AND id < $4::uuid)
+    )`
+        : '';
+
+    const limitPlaceholder = hasCursor ? '$5' : '$2';
+    const postsTable = DB_TABLE_IDENTIFIERS.posts;
+    const postTagsTable = DB_TABLE_IDENTIFIERS.postTags;
+    const tagsTable = DB_TABLE_IDENTIFIERS.tags;
+
+    return `
+WITH search_input AS (
+    SELECT websearch_to_tsquery('english', $1) AS query
+),
+ranked_posts AS (
+    SELECT
+        p.id,
+        p.created_at,
+        (
+            ts_rank_cd(
+                to_tsvector('english', coalesce(p.title, '') || ' ' || coalesce(p.summary, '')),
+                si.query
+            )
+            + CASE WHEN COALESCE(tag_match.is_match, false) THEN 0.075 ELSE 0 END
+        ) AS rank
+    FROM ${postsTable} p
+    CROSS JOIN search_input si
+    LEFT JOIN LATERAL (
+        SELECT true AS is_match
+        FROM ${postTagsTable} pt
+        INNER JOIN ${tagsTable} t ON t.id = pt.tag_id
+        WHERE pt.post_id = p.id
+            AND (
+                t.name ILIKE '%' || $1 || '%'
+                OR t.slug ILIKE '%' || $1 || '%'
+                OR to_tsvector('english', coalesce(t.name, '') || ' ' || coalesce(t.slug, '')) @@ si.query
+            )
+        LIMIT 1
+    ) AS tag_match ON true
+    WHERE p.status = 'published'
+        AND (
+            to_tsvector('english', coalesce(p.title, '') || ' ' || coalesce(p.summary, '')) @@ si.query
+            OR COALESCE(tag_match.is_match, false)
+        )
+)
+SELECT id, created_at, rank
+FROM ranked_posts
+WHERE rank > 0${cursorFilter}
+ORDER BY rank DESC, created_at DESC, id DESC
+LIMIT ${limitPlaceholder};
+`;
+}
+
+async function searchPosts({ q, limit, cursor = null, requestUserId = null }) {
+    const hasCursor = Boolean(cursor);
+    const sql = buildSearchPostsSql({ hasCursor });
+    const queryParams = [q];
+
+    if (hasCursor) {
+        queryParams.push(cursor.rank);
+        queryParams.push(cursor.createdAt);
+        queryParams.push(cursor.id);
+    }
+
+    queryParams.push(limit + 1);
+
+    const result = await searchQuery(sql, queryParams);
+    const rankedRows = Array.isArray(result?.rows) ? result.rows : [];
+    const pageRows = rankedRows.slice(0, limit);
+    const postIds = pageRows.map((row) => String(row.id)).filter(Boolean);
+
+    if (!postIds.length) {
+        return {
+            items: [],
+            nextCursor: null,
+        };
+    }
+
+    const postRows = await getPostsByIdsOrdered(postIds);
+    const enrichedPosts = await enrichPosts(postRows, { requestUserId });
+    const byId = new Map(enrichedPosts.map((post) => [String(post.id), post]));
+    const items = postIds
+        .map((id) => byId.get(id))
+        .filter(Boolean)
+        .map(mapSearchResultItem);
+
+    let nextCursor = null;
+    if (rankedRows.length > limit && pageRows.length > 0) {
+        const last = pageRows[pageRows.length - 1];
+        const rank = Number(last.rank);
+        if (Number.isFinite(rank) && last.created_at && last.id) {
+            nextCursor = encodeSearchCursor({
+                rank,
+                createdAt: last.created_at,
+                id: last.id,
+            });
+        }
+    }
+
+    return {
+        items,
+        nextCursor,
+    };
+}
+
 async function getPostMetaById(postId) {
     const { data, error } = await supabase
         .from(CONFIG.tables.posts)
@@ -819,6 +1122,7 @@ app.get('/', (req, res) => {
         schema: CONFIG.schema,
         endpoints: [
             'GET /feed',
+            'GET /search',
             'GET /posts/:id',
             'POST /posts',
             'PATCH /posts/:id',
@@ -839,6 +1143,7 @@ app.get('/health', (req, res) => {
         service: 'post-service',
         status: 'ok',
         supabaseConfigured: isSupabaseConfigured(),
+        searchDbConfigured: isSearchDbConfigured(),
     });
 });
 
@@ -933,6 +1238,39 @@ app.get('/feed', ensureDb, async (req, res) => {
         return res.status(500).json({ error: formatSupabaseError(error) });
     }
 });
+
+async function handleSearchPosts(req, res) {
+    try {
+        const requestUser = getRequestUser(req);
+        const payload = parseSearchRequest(req.query);
+
+        if (payload.errors.length) {
+            return res.status(400).json({
+                error: 'Validation failed',
+                details: payload.errors,
+            });
+        }
+
+        const result = await searchPosts({
+            q: payload.q,
+            limit: payload.limit,
+            cursor: payload.cursor,
+            requestUserId: requestUser?.id || null,
+        });
+
+        return res.json(result);
+    } catch (error) {
+        if (error?.code === '42601' || /tsquery/i.test(String(error?.message || ''))) {
+            return res.status(400).json({ error: 'Invalid search query' });
+        }
+        if (isMissingTableError(error)) return socialSchemaError(res);
+        return res.status(error?.status || 500).json({
+            error: error?.expose ? error.message : formatSupabaseError(error),
+        });
+    }
+}
+
+app.get(['/search', '/posts/search'], ensureDb, ensureSearchDb, handleSearchPosts);
 
 app.get('/posts/:id', ensureDb, async (req, res) => {
     try {
@@ -1497,6 +1835,15 @@ const server = app.listen(PORT, () => {
     if (!isSupabaseConfigured()) {
         console.log('Post Service started without Supabase config. DB routes will return 503.');
     }
+    if (!isSearchDbConfigured()) {
+        console.log('Post Service started without SUPABASE_DB_URL. Search route will return 503.');
+    }
+});
+
+server.on('close', () => {
+    closeSearchDbPool().catch((error) => {
+        console.error('Post search pool shutdown failed:', error.message);
+    });
 });
 
 let archiveTimer = null;

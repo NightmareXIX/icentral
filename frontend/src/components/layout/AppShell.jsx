@@ -59,9 +59,31 @@ function formatRelativeTime(value) {
   return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(date);
 }
 
-function mapAnnouncementItem(post) {
+function mapUnseenConversationItem(item) {
+  const conversationId = item?.conversationId ? String(item.conversationId) : '';
+  if (!conversationId) return null;
+
+  const unreadCount = Number(item?.unreadCount || 0);
+  if (unreadCount <= 0) return null;
+
+  const createdAt = item?.lastMessageAt || null;
+  const participantLabel = item?.otherUserEmail || item?.otherUserId || 'Unknown user';
+
+  return {
+    id: `chat-${conversationId}`,
+    conversationId,
+    kind: 'chat',
+    badge: 'DM',
+    title: participantLabel,
+    subtitle: `${unreadCount} unseen message${unreadCount === 1 ? '' : 's'} - ${formatRelativeTime(createdAt)}`,
+    createdAt,
+  };
+}
+
+function mapAnnouncementNotification(post) {
   return {
     id: `announcement-${post.id}`,
+    source: 'api',
     kind: 'announcement',
     badge: 'AN',
     title: post.title || 'New announcement posted',
@@ -70,12 +92,14 @@ function mapAnnouncementItem(post) {
   };
 }
 
-function mapVerificationItem(item, isModerator) {
+function mapVerificationNotification(item, isModerator) {
   const normalizedStatus = String(item?.status || '').toLowerCase();
   const createdAt = item?.reviewedAt || item?.updatedAt || item?.createdAt || null;
+
   if (isModerator) {
     return {
       id: `verification-${item.id}`,
+      source: 'api',
       kind: 'verification',
       badge: 'VF',
       title: `${item?.applicant?.fullName || 'Alumni'} requested verification`,
@@ -87,6 +111,7 @@ function mapVerificationItem(item, isModerator) {
   if (normalizedStatus === 'approved') {
     return {
       id: `verification-${item.id}`,
+      source: 'api',
       kind: 'verification',
       badge: 'VF',
       title: 'Verification approved',
@@ -98,6 +123,7 @@ function mapVerificationItem(item, isModerator) {
   if (normalizedStatus === 'rejected') {
     return {
       id: `verification-${item.id}`,
+      source: 'api',
       kind: 'verification',
       badge: 'VF',
       title: 'Verification rejected',
@@ -108,6 +134,7 @@ function mapVerificationItem(item, isModerator) {
 
   return {
     id: `verification-${item.id}`,
+    source: 'api',
     kind: 'verification',
     badge: 'VF',
     title: 'Verification pending review',
@@ -118,7 +145,8 @@ function mapVerificationItem(item, isModerator) {
 
 function mapJobNotificationItem(item) {
   return {
-    id: `job-${item.id}`,
+    id: String(item?.id || ''),
+    source: 'job-service',
     kind: 'job',
     badge: 'JB',
     title: `${item?.applicantName || 'A student'} applied for ${item?.jobTitle || 'your job post'}`,
@@ -158,6 +186,10 @@ export default function AppShell() {
   const navigate = useNavigate();
   const location = useLocation();
   const { user, isAuthenticated, isModerator, clearAuthSession } = useAuth();
+  const [globalSearchInput, setGlobalSearchInput] = useState('');
+  const [isGlobalSearchSubmitting, setIsGlobalSearchSubmitting] = useState(false);
+  const [recentUnseenMessages, setRecentUnseenMessages] = useState([]);
+  const [loadingRecentUnseenMessages, setLoadingRecentUnseenMessages] = useState(true);
   const [recentNotifications, setRecentNotifications] = useState([]);
   const [loadingRecentNotifications, setLoadingRecentNotifications] = useState(true);
 
@@ -178,73 +210,231 @@ export default function AppShell() {
     navigate('/login');
   }
 
-  useEffect(() => {
-    const controller = new AbortController();
-    let isMounted = true;
+  function handleGlobalSearchSubmit(event) {
+    event.preventDefault();
+    const q = globalSearchInput.trim();
 
-    async function loadRecentNotifications() {
-      setLoadingRecentNotifications(true);
-      const allItems = [];
-
-      try {
-        const announcementsResult = await apiRequest('/posts/feed?type=ANNOUNCEMENT&status=published&limit=8&offset=0', {
-          signal: controller.signal,
-        });
-        const announcements = Array.isArray(announcementsResult?.data) ? announcementsResult.data : [];
-        allItems.push(...announcements.map(mapAnnouncementItem));
-      } catch (error) {
-        if (error.name !== 'AbortError') {
-          console.warn('Could not load announcement notifications', error);
-        }
-      }
-
-      if (isAuthenticated && (isModerator || isAlumni)) {
-        try {
-          const statusParam = isModerator ? 'pending' : 'all';
-          const verificationResult = await apiRequest(`/users/notifications/alumni-verifications?status=${statusParam}&limit=10`, {
-            signal: controller.signal,
-          });
-          const items = Array.isArray(verificationResult?.data) ? verificationResult.data : [];
-          allItems.push(...items.map((item) => mapVerificationItem(item, isModerator)));
-        } catch (error) {
-          if (error.name !== 'AbortError') {
-            console.warn('Could not load verification notifications', error);
-          }
-        }
-      }
-
-      if (isAuthenticated && user?.id) {
-        try {
-          const jobItems = await getUnreadJobApplicationNotificationsForUser(user.id, { signal: controller.signal });
-          allItems.push(...jobItems.map(mapJobNotificationItem));
-        } catch (error) {
-          if (error.name !== 'AbortError') {
-            console.warn('Could not load job notifications', error);
-          }
-        }
-      }
-
-      if (!isMounted) return;
-
-      const sorted = allItems
-        .slice()
-        .sort((a, b) => {
-          const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-          const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-          return bTime - aTime;
-        })
-        .slice(0, 5);
-
-      setRecentNotifications(sorted);
-      setLoadingRecentNotifications(false);
+    if (!q) {
+      setIsGlobalSearchSubmitting(false);
+      navigate('/search');
+      return;
     }
 
-    loadRecentNotifications();
+    const targetPath = `/search?q=${encodeURIComponent(q)}`;
+    const currentPath = `${location.pathname}${location.search}`;
+    if (targetPath === currentPath) {
+      setIsGlobalSearchSubmitting(false);
+      return;
+    }
+
+    setIsGlobalSearchSubmitting(true);
+    navigate(targetPath);
+  }
+
+  useEffect(() => {
+    setIsGlobalSearchSubmitting(false);
+    if (!location.pathname.startsWith('/search')) return;
+    const value = new URLSearchParams(location.search).get('q') || '';
+    setGlobalSearchInput(value);
+  }, [location.pathname, location.search]);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setRecentUnseenMessages([]);
+      setLoadingRecentUnseenMessages(false);
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    let isMounted = true;
+    let isFetching = false;
+
+    async function loadRecentUnseenMessages(showLoading = true) {
+      if (isFetching) return;
+      isFetching = true;
+      if (showLoading) {
+        setLoadingRecentUnseenMessages(true);
+      }
+
+      try {
+        const conversationsResult = await apiRequest('/chat/conversations', {
+          signal: controller.signal,
+        });
+        const conversations = Array.isArray(conversationsResult?.items)
+          ? conversationsResult.items
+          : (Array.isArray(conversationsResult) ? conversationsResult : []);
+
+        const sorted = conversations
+          .map(mapUnseenConversationItem)
+          .filter(Boolean)
+          .sort((a, b) => {
+            const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+            const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+            return bTime - aTime;
+          })
+          .slice(0, 5);
+
+        if (!isMounted) return;
+        setRecentUnseenMessages(sorted);
+      } catch (error) {
+        if (error.name !== 'AbortError') {
+          console.warn('Could not load unseen messages', error);
+          if (isMounted) {
+            setRecentUnseenMessages([]);
+          }
+        }
+      } finally {
+        if (isMounted) {
+          setLoadingRecentUnseenMessages(false);
+        }
+        isFetching = false;
+      }
+    }
+
+    loadRecentUnseenMessages(true);
+
+    const refreshInterval = window.setInterval(() => {
+      if (document.visibilityState === 'hidden') return;
+      loadRecentUnseenMessages(false);
+    }, 15000);
+
+    function handleWindowFocus() {
+      loadRecentUnseenMessages(false);
+    }
+
+    window.addEventListener('focus', handleWindowFocus);
+
     return () => {
       isMounted = false;
       controller.abort();
+      window.clearInterval(refreshInterval);
+      window.removeEventListener('focus', handleWindowFocus);
     };
-  }, [isAuthenticated, isModerator, isAlumni, user?.id]);
+  }, [isAuthenticated, location.pathname, user?.id]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let isMounted = true;
+    let isFetching = false;
+
+    async function loadRecentNotifications(showLoading = true) {
+      if (isFetching) return;
+      isFetching = true;
+      if (showLoading) {
+        setLoadingRecentNotifications(true);
+      }
+
+      try {
+        const allItems = [];
+        let readKeySet = new Set();
+        let lastSeenMs = NaN;
+
+        if (isAuthenticated) {
+          try {
+            const stateResult = await apiRequest('/users/notifications/state', {
+              signal: controller.signal,
+            });
+            const lastSeenAt = stateResult?.data?.lastSeenAt || null;
+            const readKeys = Array.isArray(stateResult?.data?.readKeys)
+              ? stateResult.data.readKeys.map((value) => String(value))
+              : [];
+            readKeySet = new Set(readKeys);
+            lastSeenMs = lastSeenAt ? new Date(lastSeenAt).getTime() : NaN;
+          } catch (error) {
+            if (error.name !== 'AbortError') {
+              console.warn('Could not load notification read state', error);
+            }
+          }
+        }
+
+        try {
+          const announcementsResult = await apiRequest('/posts/feed?type=ANNOUNCEMENT&status=published&limit=12&offset=0', {
+            signal: controller.signal,
+          });
+          const announcements = Array.isArray(announcementsResult?.data) ? announcementsResult.data : [];
+          allItems.push(...announcements.map(mapAnnouncementNotification));
+        } catch (error) {
+          if (error.name !== 'AbortError') {
+            console.warn('Could not load announcement notifications', error);
+          }
+        }
+
+        if (isAuthenticated && (isModerator || isAlumni)) {
+          try {
+            const statusParam = isModerator ? 'pending' : 'all';
+            const verificationResult = await apiRequest(`/users/notifications/alumni-verifications?status=${statusParam}&limit=20`, {
+              signal: controller.signal,
+            });
+            const items = Array.isArray(verificationResult?.data) ? verificationResult.data : [];
+            allItems.push(...items.map((item) => mapVerificationNotification(item, isModerator)));
+          } catch (error) {
+            if (error.name !== 'AbortError') {
+              console.warn('Could not load verification notifications', error);
+            }
+          }
+        }
+
+        if (isAuthenticated && user?.id) {
+          try {
+            const jobItems = await getUnreadJobApplicationNotificationsForUser(user.id, { signal: controller.signal });
+            allItems.push(...jobItems.map(mapJobNotificationItem));
+          } catch (error) {
+            if (error.name !== 'AbortError') {
+              console.warn('Could not load job notifications', error);
+            }
+          }
+        }
+
+        if (!isMounted) return;
+
+        const sorted = allItems
+          .slice()
+          .sort((a, b) => {
+            const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+            const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+            return bTime - aTime;
+          });
+
+        const unreadFiltered = sorted.filter((item) => {
+          if (!isAuthenticated) return true;
+          if (item.source === 'job-service') return true;
+          if (readKeySet.has(String(item.id))) return false;
+          if (!item.createdAt) return true;
+          const createdAtMs = new Date(item.createdAt).getTime();
+          if (Number.isNaN(createdAtMs)) return true;
+          if (Number.isNaN(lastSeenMs)) return true;
+          return createdAtMs > lastSeenMs;
+        });
+
+        setRecentNotifications(unreadFiltered.slice(0, 5));
+      } finally {
+        if (isMounted) {
+          setLoadingRecentNotifications(false);
+        }
+        isFetching = false;
+      }
+    }
+
+    loadRecentNotifications(true);
+
+    const refreshInterval = window.setInterval(() => {
+      if (document.visibilityState === 'hidden') return;
+      loadRecentNotifications(false);
+    }, 20000);
+
+    function handleWindowFocus() {
+      loadRecentNotifications(false);
+    }
+
+    window.addEventListener('focus', handleWindowFocus);
+
+    return () => {
+      isMounted = false;
+      controller.abort();
+      window.clearInterval(refreshInterval);
+      window.removeEventListener('focus', handleWindowFocus);
+    };
+  }, [isAuthenticated, isModerator, isAlumni, location.pathname, user?.id]);
 
   return (
     <div className="social-shell">
@@ -253,14 +443,35 @@ export default function AppShell() {
           <Link className="brand-badge topbar-brand-link" to="/home" aria-label="Go to homepage">
             IC
           </Link>
-          <label className="topbar-search" htmlFor="global-search">
+          <form className="topbar-search" onSubmit={handleGlobalSearchSubmit} role="search" aria-label="Search posts">
             <span className="topbar-search-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" focusable="false">
                 <path d="M10 3a7 7 0 1 1 0 14a7 7 0 0 1 0-14zm0 2a5 5 0 1 0 .001 10.001A5 5 0 0 0 10 5zm8.707 11.293l2 2a1 1 0 0 1-1.414 1.414l-2-2a1 1 0 0 1 1.414-1.414z" />
               </svg>
             </span>
-            <input id="global-search" type="search" placeholder="Search ICEntral" />
-          </label>
+            <input
+              id="global-search"
+              type="search"
+              placeholder="Search posts..."
+              value={globalSearchInput}
+              onChange={(event) => setGlobalSearchInput(event.target.value)}
+              autoComplete="off"
+            />
+            <button
+              type="submit"
+              className="topbar-search-submit"
+              aria-label="Search"
+              disabled={isGlobalSearchSubmitting}
+            >
+              {isGlobalSearchSubmitting ? (
+                <span className="topbar-search-spinner" aria-hidden="true" />
+              ) : (
+                <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                  <path d="M10 3a7 7 0 1 1 0 14a7 7 0 0 1 0-14zm0 2a5 5 0 1 0 .001 10.001A5 5 0 0 0 10 5zm8.707 11.293l2 2a1 1 0 0 1-1.414 1.414l-2-2a1 1 0 0 1 1.414-1.414z" />
+                </svg>
+              )}
+            </button>
+          </form>
         </div>
 
         <nav className="topbar-nav" aria-label="Primary">
@@ -318,19 +529,6 @@ export default function AppShell() {
       <div className={`social-layout${isChatRoute ? ' is-chat-route' : ''}`}>
         {!isChatRoute ? (
           <aside className="feed-sidebar feed-sidebar-left" aria-label="Feed sections">
-            <section className="panel sidebar-panel compact-panel">
-              <div className="session-card">
-                <p>
-                  <span>Signed in as</span>
-                  <strong>{profileName}</strong>
-                </p>
-                <p>
-                  <span>Role</span>
-                  <strong>{roleLabel}</strong>
-                </p>
-              </div>
-            </section>
-
             <section className="panel sidebar-panel">
               <div className="panel-header">
                 <div>
@@ -355,6 +553,50 @@ export default function AppShell() {
 
         {!isChatRoute ? (
           <aside className="feed-sidebar feed-sidebar-right" aria-label="Social sidebar">
+            <section className="panel sidebar-panel compact-panel">
+              <div className="panel-header">
+                <div>
+                  <p className="eyebrow">Messages</p>
+                  <h3>Recent unseen</h3>
+                </div>
+              </div>
+
+              <div className="contact-list">
+                {loadingRecentUnseenMessages ? (
+                  <div className="contact-item">
+                    <span className="contact-avatar contact-avatar-group" aria-hidden="true">..</span>
+                    <div>
+                      <strong>Loading unseen messages</strong>
+                      <small>Fetching latest updates</small>
+                    </div>
+                  </div>
+                ) : recentUnseenMessages.length === 0 ? (
+                  <div className="contact-item">
+                    <span className="contact-avatar contact-avatar-group" aria-hidden="true">DM</span>
+                    <div>
+                      <strong>No unseen messages</strong>
+                      <small>You're all caught up</small>
+                    </div>
+                  </div>
+                ) : (
+                  recentUnseenMessages.map((item) => (
+                    <button
+                      type="button"
+                      className={`contact-item contact-item-action notif-${item.kind || 'neutral'}`}
+                      key={item.id}
+                      onClick={() => navigate('/chat', { state: { preferredConversationId: item.conversationId } })}
+                    >
+                      <span className="contact-avatar contact-avatar-group" aria-hidden="true">{item.badge}</span>
+                      <div>
+                        <strong>{item.title}</strong>
+                        <small>{item.subtitle}</small>
+                      </div>
+                    </button>
+                  ))
+                )}
+              </div>
+            </section>
+
             <section className="panel sidebar-panel compact-panel">
               <div className="panel-header">
                 <div>

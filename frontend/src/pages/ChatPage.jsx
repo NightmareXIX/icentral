@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
@@ -162,6 +162,7 @@ async function loadSocketIoFactory(baseUrl) {
 
 export default function ChatPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { token, user, isAuthenticated } = useAuth();
 
   const socketRef = useRef(null);
@@ -322,8 +323,12 @@ export default function ChatPage() {
       return;
     }
 
-    loadConversations();
-  }, [isAuthenticated, loadConversations, navigate, token]);
+    const preferredConversationId = location.state?.preferredConversationId
+      ? String(location.state.preferredConversationId)
+      : null;
+
+    loadConversations(preferredConversationId);
+  }, [isAuthenticated, loadConversations, location.state, navigate, token]);
 
   useEffect(() => {
     selectedConversationRef.current = selectedConversationId;
