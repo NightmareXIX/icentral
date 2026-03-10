@@ -2005,6 +2005,53 @@
   gap: 10px;
 }
 
+.job-composer-compact {
+  padding: 14px;
+}
+
+.job-mini-summary {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.job-mini-points {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 0.84rem;
+  display: grid;
+  gap: 5px;
+}
+
+.job-create-backdrop {
+  z-index: 130;
+}
+
+.job-create-modal {
+  width: min(920px, 100%);
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  border-color: rgba(176, 226, 255, 0.22);
+  background:
+    radial-gradient(circle at 86% 15%, rgba(67, 240, 213, 0.13), transparent 44%),
+    linear-gradient(180deg, rgba(9, 27, 39, 0.97), rgba(5, 16, 24, 0.98));
+}
+
+.job-create-modal .panel-header {
+  margin-bottom: 12px;
+  align-items: flex-start;
+}
+
+.job-create-modal .job-composer-footer {
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.job-create-modal .job-composer-footer .btn {
+  min-width: 0;
+}
+
 .job-create-form {
   gap: 10px;
 }
@@ -2091,7 +2138,7 @@
 
 .collab-overview-stats {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 8px;
 }
 
@@ -2107,6 +2154,8 @@
 .collab-overview-stat-card span {
   font-size: 0.77rem;
   color: var(--muted);
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .collab-overview-stat-card strong {

@@ -107,6 +107,7 @@ export default function JobPortalPage() {
   const [commentsLoadingPostId, setCommentsLoadingPostId] = useState(null);
   const [commentsSubmittingPostId, setCommentsSubmittingPostId] = useState(null);
   const [commentDrafts, setCommentDrafts] = useState({});
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
 
   const deferredSearch = useDeferredValue(searchInput);
   const activeSearch = deferredSearch.trim().toLowerCase();
@@ -238,6 +239,22 @@ export default function JobPortalPage() {
       controller.abort();
     };
   }, [refreshTick]);
+
+  useEffect(() => {
+    if (!isCreateModalOpen) return undefined;
+
+    function handleEscapeKey(event) {
+      if (event.key === 'Escape') {
+        if (submittingPost) return;
+        setIsCreateModalOpen(false);
+      }
+    }
+
+    window.addEventListener('keydown', handleEscapeKey);
+    return () => {
+      window.removeEventListener('keydown', handleEscapeKey);
+    };
+  }, [isCreateModalOpen, submittingPost]);
 
   function refreshFeed() {
     setRefreshTick((prev) => prev + 1);
@@ -545,6 +562,7 @@ export default function JobPortalPage() {
 
       setPostForm(initialPostForm);
       setBanner({ type: 'success', message: 'Job post created successfully.' });
+      setIsCreateModalOpen(false);
       refreshFeed();
     } catch (error) {
       setBanner({ type: 'error', message: `Could not create job post: ${error.message}` });
@@ -587,13 +605,29 @@ export default function JobPortalPage() {
       </section>
 
       <section className="job-portal-top-grid">
-        <section className="panel composer-panel job-composer-panel">
+        <section className="panel composer-panel job-composer-panel job-composer-compact">
           <div className="panel-header">
             <div>
               <p className="eyebrow">Create</p>
               <h3>Post a Job Opportunity</h3>
             </div>
             <span className="pill pill-ghost">POST /posts/posts</span>
+          </div>
+
+          <p className="job-mini-summary">
+            Keep the feed focused with a compact composer. Open the popup for the full job posting form.
+          </p>
+
+          <ul className="job-mini-points">
+            <li>Provide title, company, salary range, and description</li>
+            <li>Applies existing alumni verification and role restrictions</li>
+            <li>Posts instantly appear in the Job Portal feed</li>
+          </ul>
+
+          <div className="job-composer-footer">
+            <button className="btn btn-primary-solid" type="button" onClick={() => setIsCreateModalOpen(true)}>
+              Open Job Form
+            </button>
           </div>
 
           {!isAuthenticated && (
@@ -625,72 +659,140 @@ export default function JobPortalPage() {
               </p>
             </div>
           )}
-
-          <form className="stacked-form job-create-form" onSubmit={handleCreatePost}>
-            <div className="job-form-block">
-              <div className="job-form-block-head">
-                <p className="eyebrow">Role Details</p>
-                <h4>Position Basics</h4>
-              </div>
-              <div className="field-row two-col">
-                <label>
-                  <span>Job Title</span>
-                  <input
-                    type="text"
-                    placeholder="e.g. Junior Frontend Developer"
-                    value={postForm.jobTitle}
-                    onChange={(e) => updatePostField('jobTitle', e.target.value)}
-                    disabled={!canCreateJobPost}
-                  />
-                </label>
-                <label>
-                  <span>Company Name</span>
-                  <input
-                    type="text"
-                    placeholder="e.g. TechNova Ltd."
-                    value={postForm.companyName}
-                    onChange={(e) => updatePostField('companyName', e.target.value)}
-                    disabled={!canCreateJobPost}
-                  />
-                </label>
-              </div>
-              <label>
-                <span>Salary Range</span>
-                <input
-                  type="text"
-                  placeholder="e.g. $40,000 - $55,000"
-                  value={postForm.salaryRange}
-                  onChange={(e) => updatePostField('salaryRange', e.target.value)}
-                  disabled={!canCreateJobPost}
-                />
-              </label>
-            </div>
-
-            <div className="job-form-block">
-              <div className="job-form-block-head">
-                <p className="eyebrow">Description</p>
-                <h4>Role Expectations</h4>
-              </div>
-              <label>
-                <span>Job Description</span>
-                <textarea
-                  rows={4}
-                  placeholder="Describe responsibilities, required skills, and expectations"
-                  value={postForm.jobDescription}
-                  onChange={(e) => updatePostField('jobDescription', e.target.value)}
-                  disabled={!canCreateJobPost}
-                />
-              </label>
-            </div>
-
-            <div className="job-composer-footer">
-              <button className="btn btn-primary-solid" type="submit" disabled={submittingPost || !canCreateJobPost}>
-                {submittingPost ? 'Posting...' : 'Post Job'}
-              </button>
-            </div>
-          </form>
         </section>
       </section>
+
+      {isCreateModalOpen && (
+        <div
+          className="profile-edit-backdrop job-create-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Create job post"
+          onClick={() => {
+            if (submittingPost) return;
+            setIsCreateModalOpen(false);
+          }}
+        >
+          <section className="panel profile-edit-modal job-create-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="panel-header">
+              <div>
+                <p className="eyebrow">Create</p>
+                <h3>Post a Job Opportunity</h3>
+              </div>
+              <button
+                type="button"
+                className="btn btn-soft"
+                onClick={() => setIsCreateModalOpen(false)}
+                disabled={submittingPost}
+              >
+                Close
+              </button>
+            </div>
+
+            {!isAuthenticated && (
+              <div className="inline-alert warn-alert">
+                <p>
+                  Guest mode is active. You can browse jobs, but posting requires authentication.
+                  <Link to="/login"> Sign in</Link> or <Link to="/signup"> create an account</Link>.
+                </p>
+              </div>
+            )}
+
+            {isAuthenticated && !canCreateJobPost && (
+              <div className="inline-alert warn-alert">
+                <p>
+                  {!isAlumni && !isFacultyOrAdmin && 'Only verified alumni or faculty/admin can create job posts in this section.'}
+                  {isAlumni && loadingVerification && 'Checking your alumni verification status...'}
+                  {isAlumni && !loadingVerification && effectiveVerificationStatus === 'pending' && (
+                    <>
+                      Your alumni verification is pending. Faculty/Admin approval will unlock job posting.
+                    </>
+                  )}
+                  {isAlumni && !loadingVerification && (effectiveVerificationStatus === 'not_submitted' || effectiveVerificationStatus === 'rejected') && (
+                    <>
+                      You need verified alumni status to post jobs.
+                      {' '}
+                      <Link to="/alumni-verification">Apply for verification</Link>.
+                    </>
+                  )}
+                </p>
+              </div>
+            )}
+
+            <form className="stacked-form job-create-form" onSubmit={handleCreatePost}>
+              <div className="job-form-block">
+                <div className="job-form-block-head">
+                  <p className="eyebrow">Role Details</p>
+                  <h4>Position Basics</h4>
+                </div>
+                <div className="field-row two-col">
+                  <label>
+                    <span>Job Title</span>
+                    <input
+                      type="text"
+                      placeholder="e.g. Junior Frontend Developer"
+                      value={postForm.jobTitle}
+                      onChange={(e) => updatePostField('jobTitle', e.target.value)}
+                      disabled={!canCreateJobPost}
+                    />
+                  </label>
+                  <label>
+                    <span>Company Name</span>
+                    <input
+                      type="text"
+                      placeholder="e.g. TechNova Ltd."
+                      value={postForm.companyName}
+                      onChange={(e) => updatePostField('companyName', e.target.value)}
+                      disabled={!canCreateJobPost}
+                    />
+                  </label>
+                </div>
+                <label>
+                  <span>Salary Range</span>
+                  <input
+                    type="text"
+                    placeholder="e.g. $40,000 - $55,000"
+                    value={postForm.salaryRange}
+                    onChange={(e) => updatePostField('salaryRange', e.target.value)}
+                    disabled={!canCreateJobPost}
+                  />
+                </label>
+              </div>
+
+              <div className="job-form-block">
+                <div className="job-form-block-head">
+                  <p className="eyebrow">Description</p>
+                  <h4>Role Expectations</h4>
+                </div>
+                <label>
+                  <span>Job Description</span>
+                  <textarea
+                    rows={4}
+                    placeholder="Describe responsibilities, required skills, and expectations"
+                    value={postForm.jobDescription}
+                    onChange={(e) => updatePostField('jobDescription', e.target.value)}
+                    disabled={!canCreateJobPost}
+                  />
+                </label>
+              </div>
+
+              <div className="job-composer-footer">
+                <button
+                  className="btn btn-soft"
+                  type="button"
+                  onClick={() => setIsCreateModalOpen(false)}
+                  disabled={submittingPost}
+                >
+                  Cancel
+                </button>
+                <button className="btn btn-primary-solid" type="submit" disabled={submittingPost || !canCreateJobPost}>
+                  {submittingPost ? 'Posting...' : 'Post Job'}
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
 
       <section className="panel feed-panel job-feed-panel">
         <div className="panel-header feed-header">
