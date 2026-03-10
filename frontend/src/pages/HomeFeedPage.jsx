@@ -395,13 +395,18 @@ export default function HomeFeedPage() {
       return;
     }
 
-    if (!postForm.type || !postForm.summary.trim()) {
-      setBanner({ type: 'error', message: 'Type and summary are required to create a post.' });
+    if (!postForm.type) {
+      setBanner({ type: 'error', message: 'Type is required to create a post.' });
       return;
     }
 
     if (!canRoleCreateType(normalizedRole, postForm.type)) {
       setBanner({ type: 'error', message: getRoleTypeBlockMessage(normalizedRole, postForm.type) });
+      return;
+    }
+
+    if (!postForm.summary.trim()) {
+      setBanner({ type: 'error', message: 'Summary is required to create a post.' });
       return;
     }
 
@@ -774,7 +779,6 @@ export default function HomeFeedPage() {
                   ))}
                 </select>
               </label>
-
               <label className="composer-field field-status">
                 <span>Status</span>
                 <select value={postForm.status} onChange={(e) => updatePostField('status', e.target.value)} disabled={!isAuthenticated}>
@@ -946,7 +950,7 @@ export default function HomeFeedPage() {
               <option value="EVENT">Event</option>
               <option value="EVENT_RECAP">Event Recap</option>
               <option value="ACHIEVEMENT">Achievement</option>
-              <option value="COLLAB">Collaboration</option>
+              <option value="collab">Collaboration</option>
             </select>
           </label>
           <label>

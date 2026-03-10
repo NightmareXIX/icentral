@@ -3,8 +3,6 @@ import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
 import { openUserProfile } from '../utils/profileNavigation';
 import {
-  COLLAB_STORAGE_KEY,
-  COLLAB_UPDATED_EVENT,
   COLLAB_STATUSES,
   REQUEST_STATUS,
   getCollabOpeningsLeft,
@@ -14,7 +12,7 @@ import {
   reviewCollabJoinRequest,
   setCollabPostStatus,
   submitCollabJoinRequest,
-} from '../utils/collabStorage';
+} from '../utils/collabApi';
 
 function formatDate(value) {
   if (!value) return 'N/A';
@@ -59,40 +57,44 @@ export default function CollabDetailsPage() {
   const [busyRequestId, setBusyRequestId] = useState('');
 
   useEffect(() => {
-    function loadPost() {
+    let isMounted = true;
+
+    async function loadPost() {
       if (!collabId) {
+        if (!isMounted) return;
         setPost(null);
         setPageError('Missing collaboration post id.');
         setLoadingPost(false);
         return;
       }
 
-      const found = getCollabPostById(collabId);
-      if (!found) {
-        setPost(null);
-        setPageError('Collaboration post not found.');
-        setLoadingPost(false);
-        return;
-      }
+      if (isMounted) setLoadingPost(true);
+      try {
+        const found = await getCollabPostById(collabId);
+        if (!isMounted) return;
 
-      setPost(found);
-      setPageError('');
-      setLoadingPost(false);
+        if (!found) {
+          setPost(null);
+          setPageError('Collaboration post not found.');
+          setLoadingPost(false);
+          return;
+        }
+
+        setPost(found);
+        setPageError('');
+      } catch (error) {
+        if (!isMounted) return;
+        setPost(null);
+        setPageError(`Could not load collaboration post: ${error.message}`);
+      } finally {
+        if (isMounted) setLoadingPost(false);
+      }
     }
 
     loadPost();
 
-    function handleStorageUpdate(event) {
-      if (event.key && event.key !== COLLAB_STORAGE_KEY) return;
-      loadPost();
-    }
-
-    window.addEventListener(COLLAB_UPDATED_EVENT, loadPost);
-    window.addEventListener('storage', handleStorageUpdate);
-
     return () => {
-      window.removeEventListener(COLLAB_UPDATED_EVENT, loadPost);
-      window.removeEventListener('storage', handleStorageUpdate);
+      isMounted = false;
     };
   }, [collabId]);
 
@@ -152,7 +154,7 @@ export default function CollabDetailsPage() {
 
     setBusyAction(true);
     try {
-      const updated = submitCollabJoinRequest(post.id, user, message);
+      const updated = await submitCollabJoinRequest(post.id, user, message);
       setPost(updated);
       setJoinMessage('');
       setBanner({ type: 'success', message: 'Join request submitted.' });
@@ -167,7 +169,7 @@ export default function CollabDetailsPage() {
     if (!post?.id) return;
     setBusyRequestId(requestId);
     try {
-      const updated = reviewCollabJoinRequest(post.id, requestId, nextStatus, user);
+      const updated = await reviewCollabJoinRequest(post.id, requestId, nextStatus, user);
       setPost(updated);
       setBanner({
         type: 'success',
@@ -187,7 +189,7 @@ export default function CollabDetailsPage() {
     const nextStatus = isOpen ? COLLAB_STATUSES.CLOSED : COLLAB_STATUSES.OPEN;
     setBusyAction(true);
     try {
-      const updated = setCollabPostStatus(post.id, nextStatus, user);
+      const updated = await setCollabPostStatus(post.id, nextStatus, user);
       setPost(updated);
       setBanner({
         type: 'success',

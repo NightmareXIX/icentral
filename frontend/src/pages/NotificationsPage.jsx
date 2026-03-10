@@ -146,6 +146,56 @@ function mapJobApplicationNotificationToCard(notification) {
   };
 }
 
+function mapCollabNotificationToCard(notification) {
+  const postId = String(notification?.postId || '').trim();
+  const postTitle = notification?.postTitle || 'collaboration post';
+  const actorName = notification?.actorName || 'A collaborator';
+  const eventType = String(notification?.eventType || '').toLowerCase();
+
+  if (eventType === 'join_request_received') {
+    return {
+      id: String(notification.id),
+      kind: 'collab',
+      theme: 'pending',
+      icon: 'CLB',
+      label: 'Collaboration',
+      title: 'New join request received',
+      message: `${actorName} requested to join "${postTitle}".`,
+      createdAt: notification.createdAt || null,
+      ctaLabel: postId ? 'Review in Collab' : 'Open Collab',
+      ctaTo: postId ? `/collaborate/${encodeURIComponent(postId)}` : '/collaborate',
+    };
+  }
+
+  if (eventType === 'join_request_accepted') {
+    return {
+      id: String(notification.id),
+      kind: 'collab',
+      theme: 'approved',
+      icon: 'CLB',
+      label: 'Collaboration',
+      title: 'Join request accepted',
+      message: `Your request for "${postTitle}" was accepted by ${actorName}.`,
+      createdAt: notification.createdAt || null,
+      ctaLabel: postId ? 'Open Collab' : 'Open Collaborate',
+      ctaTo: postId ? `/collaborate/${encodeURIComponent(postId)}` : '/collaborate',
+    };
+  }
+
+  return {
+    id: String(notification.id),
+    kind: 'collab',
+    theme: 'rejected',
+    icon: 'CLB',
+    label: 'Collaboration',
+    title: 'Join request updated',
+    message: `Your request for "${postTitle}" was not accepted.`,
+    createdAt: notification.createdAt || null,
+    ctaLabel: postId ? 'Open Collab' : 'Open Collaborate',
+    ctaTo: postId ? `/collaborate/${encodeURIComponent(postId)}` : '/collaborate',
+  };
+}
+
 export default function NotificationsPage() {
   const { isAuthenticated, role, user } = useAuth();
   const normalizedRole = String(role || '').toLowerCase();
@@ -222,6 +272,20 @@ export default function NotificationsPage() {
         }
       }
 
+      if (isAuthenticated) {
+        try {
+          const collabResult = await apiRequest('/posts/collab-notifications?limit=30', {
+            signal: controller.signal,
+          });
+          const collabNotifications = Array.isArray(collabResult?.data) ? collabResult.data : [];
+          allCards.push(...collabNotifications.map(mapCollabNotificationToCard));
+        } catch (error) {
+          if (error.name !== 'AbortError') {
+            errors.push(`Collaboration: ${error.message}`);
+          }
+        }
+      }
+
       if (!isMounted) return;
 
       const sorted = allCards
@@ -266,20 +330,20 @@ export default function NotificationsPage() {
       return {
         eyebrow: 'Notifications',
         title: 'Admin Notification Center',
-        subtitle: 'You will see new approval requests and feed announcements here.',
+        subtitle: 'You will see moderation, collaboration, and feed updates here.',
       };
     }
     if (isAlumni) {
       return {
         eyebrow: 'Notifications',
         title: 'Alumni Notification Center',
-        subtitle: 'You will see verification outcomes, feed announcements, and job applications here.',
+        subtitle: 'You will see collaboration updates, verification outcomes, and feed activity here.',
       };
     }
     return {
       eyebrow: 'Notifications',
       title: 'Notification Center',
-      subtitle: 'Announcements and account-relevant updates appear here.',
+      subtitle: 'Announcements, collaboration updates, and account-relevant activity appear here.',
     };
   }, [isAlumni, isModerator]);
 

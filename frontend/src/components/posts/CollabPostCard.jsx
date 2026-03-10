@@ -6,7 +6,7 @@ import {
   getCollabPendingRequestCount,
   getCollabRequestForUser,
   REQUEST_STATUS,
-} from '../../utils/collabStorage';
+} from '../../utils/collabApi';
 
 const CARD_NAV_IGNORE_SELECTOR = 'a,button,input,textarea,select,label,[role="button"],[data-prevent-card-nav="true"]';
 

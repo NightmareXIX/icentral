@@ -34,6 +34,18 @@ app.get('/posts', buildServiceProxy(postServiceUrl, {
     },
 }));
 
+app.use('/posts/collab-posts', buildServiceProxy(postServiceUrl, {
+    pathRewrite: (path) => `/collab-posts${path === '/' ? '' : path}`,
+}));
+
+app.use('/posts/join-requests', buildServiceProxy(postServiceUrl, {
+    pathRewrite: (path) => `/join-requests${path === '/' ? '' : path}`,
+}));
+
+app.use('/posts/collab-notifications', buildServiceProxy(postServiceUrl, {
+    pathRewrite: (path) => `/collab-notifications${path === '/' ? '' : path}`,
+}));
+
 app.use('/users', buildServiceProxy(userServiceUrl));
 app.use('/posts', buildServiceProxy(postServiceUrl));
 app.use('/jobs', buildServiceProxy(jobServiceUrl));
@@ -54,7 +66,7 @@ app.get('/health', (req, res) => {
     return res.json({
         service: 'api-gateway',
         status: 'ok',
-        routes: ['/auth', '/users', '/posts', '/jobs', '/chat'],
+        routes: ['/auth', '/users', '/posts', '/posts/collab-posts', '/posts/join-requests', '/posts/collab-notifications', '/jobs', '/chat'],
     });
 });
 

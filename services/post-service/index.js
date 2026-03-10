@@ -11,6 +11,16 @@ const SEARCH_DEFAULT_LIMIT = 20;
 const SEARCH_MAX_LIMIT = 50;
 const SEARCH_MIN_QUERY_LENGTH = 2;
 const SEARCH_MAX_QUERY_LENGTH = 80;
+const COLLAB_DEFAULT_LIMIT = 20;
+const COLLAB_MAX_LIMIT = 100;
+const COLLAB_NOTIFICATION_DEFAULT_LIMIT = 30;
+const COLLAB_NOTIFICATION_MAX_LIMIT = 100;
+const COLLAB_MODES = new Set(['remote', 'onsite', 'hybrid']);
+const COLLAB_STATUSES = new Set(['open', 'closed']);
+const COLLAB_JOIN_REQUEST_STATUSES = new Set(['pending', 'accepted', 'rejected']);
+const COLLAB_FALLBACK_CATEGORY = 'Other Academic Collaboration';
+const COLLAB_FALLBACK_DURATION = 'Not specified';
+const COLLAB_FALLBACK_SKILL = 'General collaboration';
 
 const CONFIG = {
     supabaseUrl: process.env.SUPABASE_URL,
@@ -25,6 +35,10 @@ const CONFIG = {
         postRefs: process.env.POST_REFS_TABLE || 'post_refs',
         postVotes: process.env.POST_VOTES_TABLE || 'post_votes',
         postComments: process.env.POST_COMMENTS_TABLE || 'post_comments',
+        collabPosts: process.env.COLLAB_POSTS_TABLE || 'collab_posts',
+        collabSkills: process.env.COLLAB_SKILLS_TABLE || 'collab_skills',
+        collabJoinRequests: process.env.COLLAB_JOIN_REQUESTS_TABLE || 'collab_join_requests',
+        collabMemberships: process.env.COLLAB_MEMBERSHIPS_TABLE || 'collab_memberships',
         alumniVerificationApplications: process.env.ALUMNI_VERIFICATION_TABLE || 'alumni_verification_applications',
     },
     feedDefaultLimit: Number(process.env.POST_FEED_DEFAULT_LIMIT) || 20,
@@ -371,6 +385,12 @@ function socialSchemaError(res) {
     });
 }
 
+function collabSchemaError(res) {
+    return res.status(500).json({
+        error: `Missing collaboration tables. Run services/post-service/schema.sql first.`,
+    });
+}
+
 function ensureDb(req, res, next) {
     if (!isSupabaseConfigured()) {
         return dbUnavailable(res);
@@ -423,6 +443,10 @@ function canCreateAnnouncement(role) {
 
 function canCreateJobAsBypassRole(role) {
     return isModeratorRole(role);
+}
+
+function isCollabType(value) {
+    return String(value || '').trim().toUpperCase() === 'COLLAB';
 }
 
 function resolveVerificationStatus(rows) {
@@ -1216,6 +1240,950 @@ async function resolveTagFilterPostIds(tagFilter) {
     return [...new Set((links || []).map((link) => link.post_id))];
 }
 
+function toTitleCase(value) {
+    const normalized = normalizeText(value);
+    if (!normalized) return '';
+    return normalized.charAt(0).toUpperCase() + normalized.slice(1).toLowerCase();
+}
+
+function formatUserRole(role) {
+    const normalized = normalizeText(role).toLowerCase();
+    if (normalized === 'admin') return 'Admin';
+    if (normalized === 'faculty') return 'Faculty';
+    if (normalized === 'alumni') return 'Alumni';
+    if (normalized === 'student') return 'Student';
+    if (!normalized) return 'Member';
+    return toTitleCase(normalized);
+}
+
+function uniqueTrimmedValues(values = []) {
+    const seen = new Set();
+    const normalizedValues = [];
+
+    for (const value of values) {
+        const normalized = normalizeText(value);
+        if (!normalized) continue;
+        const key = normalized.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        normalizedValues.push(normalized);
+    }
+
+    return normalizedValues;
+}
+
+function parseStringListInput(value) {
+    if (Array.isArray(value)) {
+        return uniqueTrimmedValues(value);
+    }
+
+    if (typeof value === 'string') {
+        return uniqueTrimmedValues(value.split(','));
+    }
+
+    return [];
+}
+
+function normalizeCollabMode(value, { allowEmpty = false, fieldName = 'mode' } = {}) {
+    const normalized = normalizeText(value).toLowerCase();
+    if (!normalized && allowEmpty) return { value: null };
+    if (!normalized) return { error: `${fieldName} is required` };
+    if (!COLLAB_MODES.has(normalized)) {
+        return { error: `${fieldName} must be one of: remote, onsite, hybrid` };
+    }
+    return { value: normalized };
+}
+
+function normalizeCollabStatus(value, { allowEmpty = false, fieldName = 'status' } = {}) {
+    const normalized = normalizeText(value).toLowerCase();
+    if (!normalized && allowEmpty) return { value: null };
+    if (!normalized) return { error: `${fieldName} is required` };
+    if (!COLLAB_STATUSES.has(normalized)) {
+        return { error: `${fieldName} must be one of: open, closed` };
+    }
+    return { value: normalized };
+}
+
+function normalizeJoinRequestStatus(value, { allowEmpty = false, fieldName = 'status' } = {}) {
+    const normalized = normalizeText(value).toLowerCase();
+    if (!normalized && allowEmpty) return { value: null };
+    if (!normalized) return { error: `${fieldName} is required` };
+    if (!COLLAB_JOIN_REQUEST_STATUSES.has(normalized)) {
+        return { error: `${fieldName} must be one of: pending, accepted, rejected` };
+    }
+    return { value: normalized };
+}
+
+function normalizeCollabSort(value) {
+    const normalized = normalizeText(value).toLowerCase();
+    return normalized === 'deadline' ? 'deadline' : 'newest';
+}
+
+function formatCollabMode(mode) {
+    const normalized = normalizeText(mode).toLowerCase();
+    if (normalized === 'remote') return 'REMOTE';
+    if (normalized === 'onsite') return 'ONSITE';
+    return 'HYBRID';
+}
+
+function formatCollabStatus(status) {
+    const normalized = normalizeText(status).toLowerCase();
+    return normalized === 'closed' ? 'CLOSED' : 'OPEN';
+}
+
+function formatJoinRequestStatus(status) {
+    const normalized = normalizeText(status).toLowerCase();
+    if (normalized === 'accepted') return 'ACCEPTED';
+    if (normalized === 'rejected') return 'REJECTED';
+    return 'PENDING';
+}
+
+function parseCollabTagInputs(body = {}) {
+    const errors = [];
+    let tagIds = [];
+    let tagNames = [];
+    let tagsProvided = false;
+
+    if (Array.isArray(body.tagIds)) {
+        tagsProvided = true;
+        tagIds = body.tagIds
+            .map((id) => String(id || '').trim())
+            .filter(Boolean);
+    }
+
+    if (body.tags !== undefined) {
+        tagsProvided = true;
+        if (Array.isArray(body.tags)) {
+            if (body.tags.every((tag) => typeof tag === 'string')) {
+                tagNames = body.tags.map((tag) => String(tag).trim()).filter(Boolean);
+            } else if (body.tags.every((tag) => tag && typeof tag === 'object')) {
+                tagIds = [
+                    ...tagIds,
+                    ...body.tags
+                        .map((tag) => (tag.id !== undefined ? String(tag.id).trim() : ''))
+                        .filter(Boolean),
+                ];
+                tagNames = [
+                    ...tagNames,
+                    ...body.tags
+                        .map((tag) => (typeof tag.name === 'string' ? tag.name.trim() : ''))
+                        .filter(Boolean),
+                ];
+            } else {
+                errors.push('tags must be an array of strings or objects');
+            }
+        } else if (typeof body.tags === 'string') {
+            tagNames = parseStringListInput(body.tags);
+        } else {
+            errors.push('tags must be an array or comma-separated string');
+        }
+    }
+
+    return {
+        errors,
+        tagsProvided,
+        tagIds: [...new Set(tagIds)],
+        tagNames: uniqueTrimmedValues(tagNames),
+    };
+}
+
+function parseCollabPostPayload(body = {}, { partial = false } = {}) {
+    const errors = [];
+    const postFields = {};
+    const collabFields = {};
+
+    const hasTitle = Object.prototype.hasOwnProperty.call(body, 'title');
+    const hasSummary = Object.prototype.hasOwnProperty.call(body, 'summary');
+    const hasCategory = Object.prototype.hasOwnProperty.call(body, 'category');
+    const hasDescription = Object.prototype.hasOwnProperty.call(body, 'description');
+    const hasMode = Object.prototype.hasOwnProperty.call(body, 'mode');
+    const hasTimeCommitment = Object.prototype.hasOwnProperty.call(body, 'timeCommitmentHoursPerWeek')
+        || Object.prototype.hasOwnProperty.call(body, 'time_commitment_hours_per_week');
+    const hasDuration = Object.prototype.hasOwnProperty.call(body, 'duration');
+    const hasOpenings = Object.prototype.hasOwnProperty.call(body, 'openings');
+    const hasPreferredBackground = Object.prototype.hasOwnProperty.call(body, 'preferredBackground')
+        || Object.prototype.hasOwnProperty.call(body, 'preferred_background');
+    const hasJoinUntil = Object.prototype.hasOwnProperty.call(body, 'joinUntil')
+        || Object.prototype.hasOwnProperty.call(body, 'deadline');
+    const hasContactMethod = Object.prototype.hasOwnProperty.call(body, 'contactMethod')
+        || Object.prototype.hasOwnProperty.call(body, 'contact_method');
+    const hasRequiredSkills = Object.prototype.hasOwnProperty.call(body, 'requiredSkills')
+        || Object.prototype.hasOwnProperty.call(body, 'required_skills');
+
+    if (!partial || hasTitle) {
+        const title = normalizeText(body.title);
+        if (!title) {
+            errors.push('title is required');
+        } else {
+            postFields.title = title;
+        }
+    }
+
+    if (!partial || hasSummary) {
+        const summary = normalizeText(body.summary);
+        if (!summary) {
+            errors.push('summary is required');
+        } else {
+            postFields.summary = summary;
+        }
+    }
+
+    if (!partial || hasCategory) {
+        const category = normalizeText(body.category);
+        if (!category) {
+            errors.push('category is required');
+        } else {
+            collabFields.category = category;
+        }
+    }
+
+    if (!partial || hasDescription) {
+        const description = normalizeText(body.description);
+        if (!description) {
+            errors.push('description is required');
+        } else {
+            collabFields.description = description;
+        }
+    }
+
+    if (!partial || hasMode) {
+        const modeResult = normalizeCollabMode(body.mode, { fieldName: 'mode' });
+        if (modeResult.error) {
+            errors.push(modeResult.error);
+        } else {
+            collabFields.mode = modeResult.value;
+        }
+    }
+
+    if (!partial || hasTimeCommitment) {
+        const rawTimeCommitment = body.timeCommitmentHoursPerWeek !== undefined
+            ? body.timeCommitmentHoursPerWeek
+            : body.time_commitment_hours_per_week;
+        const timeCommitment = Number.parseInt(rawTimeCommitment, 10);
+        if (!Number.isFinite(timeCommitment) || timeCommitment <= 0) {
+            errors.push('timeCommitmentHoursPerWeek must be a positive integer');
+        } else {
+            collabFields.time_commitment_hours_per_week = timeCommitment;
+        }
+    }
+
+    if (!partial || hasDuration) {
+        const duration = normalizeText(body.duration);
+        if (!duration) {
+            errors.push('duration is required');
+        } else {
+            collabFields.duration = duration;
+        }
+    }
+
+    if (!partial || hasOpenings) {
+        const openings = Number.parseInt(body.openings, 10);
+        if (!Number.isFinite(openings) || openings <= 0) {
+            errors.push('openings must be a positive integer');
+        } else {
+            collabFields.openings = openings;
+        }
+    }
+
+    if (!partial || hasPreferredBackground) {
+        const preferredBackground = body.preferredBackground !== undefined
+            ? body.preferredBackground
+            : body.preferred_background;
+        collabFields.preferred_background = normalizeText(preferredBackground) || null;
+    }
+
+    if (!partial || hasContactMethod) {
+        const contactMethod = body.contactMethod !== undefined
+            ? body.contactMethod
+            : body.contact_method;
+        collabFields.contact_method = normalizeText(contactMethod) || null;
+    }
+
+    if (!partial || hasJoinUntil) {
+        const deadlineInput = body.joinUntil !== undefined ? body.joinUntil : body.deadline;
+        const deadlineResult = normalizeDate(deadlineInput, 'joinUntil');
+        if (deadlineResult.error) {
+            errors.push(deadlineResult.error);
+        } else {
+            collabFields.deadline = deadlineResult.value;
+        }
+    }
+
+    let requiredSkills = [];
+    let skillsProvided = false;
+    if (hasRequiredSkills) {
+        skillsProvided = true;
+        const rawSkills = body.requiredSkills !== undefined ? body.requiredSkills : body.required_skills;
+        requiredSkills = parseStringListInput(rawSkills);
+    }
+
+    if (!partial || hasRequiredSkills) {
+        if (!requiredSkills.length) {
+            errors.push('requiredSkills must include at least one skill');
+        }
+    }
+
+    const tagPayload = parseCollabTagInputs(body);
+    errors.push(...tagPayload.errors);
+
+    return {
+        errors,
+        postFields,
+        collabFields,
+        skillsProvided: skillsProvided || !partial,
+        requiredSkills,
+        tagsProvided: tagPayload.tagsProvided,
+        tagIds: tagPayload.tagIds,
+        tagNames: tagPayload.tagNames,
+    };
+}
+
+async function replaceCollabSkills(postId, requiredSkills = []) {
+    const { error: deleteError } = await supabase
+        .from(CONFIG.tables.collabSkills)
+        .delete()
+        .eq('post_id', postId);
+
+    if (deleteError && !isMissingTableError(deleteError)) {
+        throw deleteError;
+    }
+
+    if (!Array.isArray(requiredSkills) || requiredSkills.length === 0) {
+        return;
+    }
+
+    const rows = uniqueTrimmedValues(requiredSkills).map((skill) => ({
+        post_id: postId,
+        skill,
+    }));
+
+    if (!rows.length) return;
+
+    const { error: insertError } = await supabase
+        .from(CONFIG.tables.collabSkills)
+        .insert(rows);
+
+    if (insertError) {
+        throw insertError;
+    }
+}
+
+function buildFallbackCollabDescription(postRow = {}) {
+    const summary = normalizeText(postRow.summary);
+    if (summary) return summary;
+
+    const title = normalizeText(postRow.title);
+    if (title) return `Collaboration opportunity: ${title}`;
+
+    return 'Collaboration opportunity posted from the home feed.';
+}
+
+async function ensureDefaultCollabDataForPost(postRow) {
+    const postId = normalizeText(postRow?.id);
+    if (!postId) {
+        throw new Error('post id is required to create fallback collaboration data');
+    }
+
+    const nowIso = new Date().toISOString();
+    const collabStatus = normalizeText(postRow?.status).toLowerCase() === 'archived'
+        ? 'closed'
+        : 'open';
+
+    const { error: upsertError } = await supabase
+        .from(CONFIG.tables.collabPosts)
+        .upsert({
+            post_id: postId,
+            category: COLLAB_FALLBACK_CATEGORY,
+            description: buildFallbackCollabDescription(postRow),
+            mode: 'hybrid',
+            time_commitment_hours_per_week: 1,
+            duration: COLLAB_FALLBACK_DURATION,
+            openings: 1,
+            preferred_background: null,
+            deadline: postRow?.expires_at || null,
+            status: collabStatus,
+            contact_method: null,
+            updated_at: nowIso,
+        }, {
+            onConflict: 'post_id',
+        });
+
+    if (upsertError) {
+        throw upsertError;
+    }
+
+    await replaceCollabSkills(postId, [COLLAB_FALLBACK_SKILL]);
+}
+
+async function getCollabPostMetaById(postId) {
+    const normalizedId = normalizeText(postId);
+    if (!normalizedId) return null;
+
+    const { data: postRow, error: postError } = await supabase
+        .from(CONFIG.tables.posts)
+        .select('*')
+        .eq('id', normalizedId)
+        .eq('type', 'collab')
+        .maybeSingle();
+
+    if (postError) {
+        throw postError;
+    }
+
+    if (!postRow) return null;
+
+    const { data: collabRow, error: collabError } = await supabase
+        .from(CONFIG.tables.collabPosts)
+        .select('*')
+        .eq('post_id', normalizedId)
+        .maybeSingle();
+
+    if (collabError) {
+        throw collabError;
+    }
+
+    if (!collabRow) return null;
+
+    return { postRow, collabRow };
+}
+
+async function getCollabSkillsByPostIds(postIds = []) {
+    if (!postIds.length) return new Map();
+
+    const { data, error } = await supabase
+        .from(CONFIG.tables.collabSkills)
+        .select('post_id, skill')
+        .in('post_id', postIds);
+
+    if (error) {
+        if (isMissingTableError(error)) return new Map();
+        throw error;
+    }
+
+    const skillsByPostId = new Map();
+    for (const row of data || []) {
+        const existing = skillsByPostId.get(row.post_id) || [];
+        existing.push(row.skill);
+        skillsByPostId.set(row.post_id, existing);
+    }
+
+    for (const [postId, skills] of skillsByPostId.entries()) {
+        skillsByPostId.set(postId, uniqueTrimmedValues(skills));
+    }
+
+    return skillsByPostId;
+}
+
+async function getCollabMemberCountByPostIds(postIds = []) {
+    if (!postIds.length) return new Map();
+
+    const { data, error } = await supabase
+        .from(CONFIG.tables.collabMemberships)
+        .select('post_id')
+        .in('post_id', postIds);
+
+    if (error) {
+        if (isMissingTableError(error)) return new Map();
+        throw error;
+    }
+
+    const countByPostId = new Map();
+    for (const row of data || []) {
+        const count = countByPostId.get(row.post_id) || 0;
+        countByPostId.set(row.post_id, count + 1);
+    }
+
+    return countByPostId;
+}
+
+async function getCollabRequestSummaryByPostIds(postIds = [], requestUserId = null) {
+    const totalCountByPostId = new Map();
+    const pendingCountByPostId = new Map();
+    const currentUserRequestByPostId = new Map();
+
+    if (!postIds.length) {
+        return {
+            totalCountByPostId,
+            pendingCountByPostId,
+            currentUserRequestByPostId,
+        };
+    }
+
+    const { data, error } = await supabase
+        .from(CONFIG.tables.collabJoinRequests)
+        .select('id, post_id, user_id, message, status, created_at, updated_at, reviewed_at')
+        .in('post_id', postIds);
+
+    if (error) {
+        if (isMissingTableError(error)) {
+            return {
+                totalCountByPostId,
+                pendingCountByPostId,
+                currentUserRequestByPostId,
+            };
+        }
+        throw error;
+    }
+
+    for (const row of data || []) {
+        const currentTotal = totalCountByPostId.get(row.post_id) || 0;
+        totalCountByPostId.set(row.post_id, currentTotal + 1);
+
+        const normalizedStatus = normalizeText(row.status).toLowerCase();
+        if (normalizedStatus === 'pending') {
+            const currentPending = pendingCountByPostId.get(row.post_id) || 0;
+            pendingCountByPostId.set(row.post_id, currentPending + 1);
+        }
+
+        if (requestUserId && String(row.user_id) === String(requestUserId)) {
+            currentUserRequestByPostId.set(row.post_id, row);
+        }
+    }
+
+    return {
+        totalCountByPostId,
+        pendingCountByPostId,
+        currentUserRequestByPostId,
+    };
+}
+
+function mapCollabJoinRequest(row, userMap = new Map()) {
+    const applicant = userMap.get(row.user_id);
+    const applicantName = normalizeText(applicant?.fullName) || normalizeText(applicant?.email) || 'Community member';
+
+    return {
+        id: row.id,
+        postId: row.post_id,
+        userId: row.user_id,
+        message: normalizeText(row.message),
+        status: formatJoinRequestStatus(row.status),
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        reviewedAt: row.reviewed_at,
+        applicantName,
+        applicantRole: formatUserRole(applicant?.role),
+        applicant: applicant
+            ? {
+                id: applicant.id,
+                fullName: applicant.fullName,
+                email: applicant.email,
+                role: applicant.role,
+                avatarUrl: applicant.avatarUrl,
+            }
+            : null,
+    };
+}
+
+function mapCollabMembership(row, userMap = new Map()) {
+    const user = userMap.get(row.user_id);
+    const name = normalizeText(user?.fullName) || normalizeText(user?.email) || 'Collaborator';
+
+    return {
+        id: row.id,
+        postId: row.post_id,
+        userId: row.user_id,
+        teamRole: normalizeText(row.team_role) || null,
+        name,
+        role: formatUserRole(user?.role),
+        acceptedAt: row.created_at,
+        user: user
+            ? {
+                id: user.id,
+                fullName: user.fullName,
+                email: user.email,
+                role: user.role,
+                avatarUrl: user.avatarUrl,
+            }
+            : null,
+    };
+}
+
+function mapCollabPostRecord({
+    post,
+    collab,
+    tags = [],
+    skills = [],
+    author = null,
+    requestCount = 0,
+    pendingRequestCount = 0,
+    memberCount = 0,
+    currentUserRequest = null,
+}) {
+    const safeOpenings = Number.isFinite(Number(collab?.openings))
+        ? Math.max(1, Math.trunc(Number(collab.openings)))
+        : 1;
+    const safeMemberCount = Number.isFinite(Number(memberCount))
+        ? Math.max(0, Math.trunc(Number(memberCount)))
+        : 0;
+    const safeRequestCount = Number.isFinite(Number(requestCount))
+        ? Math.max(0, Math.trunc(Number(requestCount)))
+        : 0;
+    const safePendingRequestCount = Number.isFinite(Number(pendingRequestCount))
+        ? Math.max(0, Math.trunc(Number(pendingRequestCount)))
+        : 0;
+    const openingsLeft = Math.max(0, safeOpenings - safeMemberCount);
+    const creatorName = normalizeText(author?.fullName) || normalizeText(author?.email) || 'Community member';
+    const roleLabel = formatUserRole(author?.role);
+
+    return {
+        id: post.id,
+        type: post.type,
+        title: post.title,
+        summary: post.summary,
+        description: collab.description,
+        category: collab.category,
+        authorId: post.authorId,
+        creator: {
+            id: author?.id || post.authorId || '',
+            name: creatorName,
+            role: roleLabel,
+        },
+        author: author
+            ? {
+                id: author.id,
+                fullName: author.fullName,
+                email: author.email,
+                role: author.role,
+                avatarUrl: author.avatarUrl,
+            }
+            : null,
+        requiredSkills: uniqueTrimmedValues(skills),
+        preferredBackground: collab.preferred_background || '',
+        timeCommitmentHoursPerWeek: Number.isFinite(Number(collab.time_commitment_hours_per_week))
+            ? Math.max(1, Math.trunc(Number(collab.time_commitment_hours_per_week)))
+            : 1,
+        duration: collab.duration,
+        mode: formatCollabMode(collab.mode),
+        openings: safeOpenings,
+        status: formatCollabStatus(collab.status),
+        joinUntil: collab.deadline || null,
+        deadline: collab.deadline || null,
+        contactMethod: collab.contact_method || null,
+        createdAt: post.createdAt,
+        updatedAt: collab.updated_at || post.updatedAt,
+        postStatus: post.status,
+        tags: (tags || []).map((tag) => tag.name),
+        tagObjects: tags || [],
+        joinRequestCount: safeRequestCount,
+        pendingRequestCount: safePendingRequestCount,
+        memberCount: safeMemberCount,
+        openingsLeft,
+        currentUserRequest: currentUserRequest
+            ? {
+                id: currentUserRequest.id,
+                userId: currentUserRequest.user_id,
+                message: currentUserRequest.message || '',
+                status: formatJoinRequestStatus(currentUserRequest.status),
+                createdAt: currentUserRequest.created_at,
+                updatedAt: currentUserRequest.updated_at,
+                reviewedAt: currentUserRequest.reviewed_at || null,
+            }
+            : null,
+    };
+}
+
+async function buildCollabPosts(postRows = [], collabRows = [], { requestUserId = null } = {}) {
+    if (!postRows.length || !collabRows.length) return [];
+
+    const collabByPostId = new Map((collabRows || []).map((row) => [String(row.post_id), row]));
+    const mappedPosts = postRows
+        .map(mapPost)
+        .filter((post) => collabByPostId.has(String(post.id)));
+
+    if (!mappedPosts.length) return [];
+
+    const withTags = await attachTags(mappedPosts);
+    const postIds = withTags.map((post) => post.id);
+    const authorIds = [...new Set(withTags.map((post) => post.authorId).filter(Boolean))];
+
+    const tagsByPostId = new Map(withTags.map((post) => [String(post.id), Array.isArray(post.tags) ? post.tags : []]));
+    const authorMap = await getUsersByIds(authorIds);
+    const skillsByPostId = await getCollabSkillsByPostIds(postIds);
+    const memberCountByPostId = await getCollabMemberCountByPostIds(postIds);
+    const requestSummary = await getCollabRequestSummaryByPostIds(postIds, requestUserId);
+
+    return withTags.map((post) => {
+        const collab = collabByPostId.get(String(post.id));
+        const author = post.authorId ? (authorMap.get(post.authorId) || null) : null;
+        const tags = tagsByPostId.get(String(post.id)) || [];
+        const skills = skillsByPostId.get(String(post.id)) || [];
+        const memberCount = memberCountByPostId.get(String(post.id)) || 0;
+        const totalRequestCount = requestSummary.totalCountByPostId.get(String(post.id)) || 0;
+        const pendingRequestCount = requestSummary.pendingCountByPostId.get(String(post.id)) || 0;
+        const currentUserRequest = requestSummary.currentUserRequestByPostId.get(String(post.id)) || null;
+
+        return mapCollabPostRecord({
+            post,
+            collab,
+            tags,
+            skills,
+            author,
+            requestCount: totalRequestCount,
+            pendingRequestCount,
+            memberCount,
+            currentUserRequest,
+        });
+    });
+}
+
+async function getCollabPostById(postId, { requestUserId = null } = {}) {
+    const normalizedPostId = normalizeText(postId);
+    if (!normalizedPostId) return null;
+
+    const meta = await getCollabPostMetaById(normalizedPostId);
+    if (!meta) return null;
+
+    const [post] = await buildCollabPosts([meta.postRow], [meta.collabRow], { requestUserId });
+    return post || null;
+}
+
+function canEditCollabPost(meta, requestUser) {
+    if (!meta?.postRow) return false;
+    return Boolean(requestUser?.id) && String(meta.postRow.author_id) === String(requestUser.id);
+}
+
+async function closeCollabPostWhenFull(postId, collabRow) {
+    const openings = Number.isFinite(Number(collabRow?.openings))
+        ? Math.max(1, Math.trunc(Number(collabRow.openings)))
+        : 1;
+    const memberCountMap = await getCollabMemberCountByPostIds([postId]);
+    const memberCount = memberCountMap.get(postId) || 0;
+    const shouldClose = memberCount >= openings;
+
+    if (shouldClose && normalizeText(collabRow?.status).toLowerCase() !== 'closed') {
+        const nowIso = new Date().toISOString();
+        const { error } = await supabase
+            .from(CONFIG.tables.collabPosts)
+            .update({ status: 'closed', updated_at: nowIso })
+            .eq('post_id', postId);
+
+        if (error) {
+            throw error;
+        }
+    }
+
+    return { memberCount, shouldClose };
+}
+
+async function getCollabMembers(postId) {
+    const { data, error } = await supabase
+        .from(CONFIG.tables.collabMemberships)
+        .select('id, post_id, user_id, team_role, created_at')
+        .eq('post_id', postId)
+        .order('created_at', { ascending: true });
+
+    if (error) {
+        throw error;
+    }
+
+    const userIds = [...new Set((data || []).map((row) => row.user_id).filter(Boolean))];
+    const userMap = await getUsersByIds(userIds);
+    return (data || []).map((row) => mapCollabMembership(row, userMap));
+}
+
+async function getCollabJoinRequests(postId, { status = null } = {}) {
+    let query = supabase
+        .from(CONFIG.tables.collabJoinRequests)
+        .select('id, post_id, user_id, message, status, created_at, updated_at, reviewed_at')
+        .eq('post_id', postId)
+        .order('created_at', { ascending: false });
+
+    if (status && status !== 'all') {
+        query = query.eq('status', status);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+        throw error;
+    }
+
+    const userIds = [...new Set((data || []).map((row) => row.user_id).filter(Boolean))];
+    const userMap = await getUsersByIds(userIds);
+    return (data || []).map((row) => mapCollabJoinRequest(row, userMap));
+}
+
+function normalizeIsoTimestamp(value) {
+    if (!value) return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    return date.toISOString();
+}
+
+function getTimestampForSort(value) {
+    const normalized = normalizeIsoTimestamp(value);
+    if (!normalized) return 0;
+    return new Date(normalized).getTime();
+}
+
+function buildOwnerPendingJoinRequestNotification({
+    requestRow,
+    postRow,
+    requesterUser = null,
+}) {
+    const createdAt = normalizeIsoTimestamp(requestRow?.created_at || requestRow?.updated_at);
+    const postId = normalizeText(requestRow?.post_id);
+    const postTitle = normalizeText(postRow?.title) || 'Collaboration post';
+    const requesterName = normalizeText(requesterUser?.fullName) || normalizeText(requesterUser?.email) || 'A collaborator';
+    const idStamp = createdAt || 'unknown';
+
+    return {
+        id: `collab-owner-pending-${requestRow.id}-${idStamp}`,
+        source: 'api',
+        kind: 'collab',
+        eventType: 'join_request_received',
+        requestStatus: 'PENDING',
+        postId,
+        postTitle,
+        requestId: requestRow.id,
+        createdAt,
+        actorUserId: normalizeText(requestRow?.user_id) || null,
+        actorName: requesterName,
+        message: normalizeText(requestRow?.message) || null,
+    };
+}
+
+function buildApplicantReviewNotification({
+    requestRow,
+    postRow,
+    ownerUser = null,
+}) {
+    const normalizedStatus = normalizeText(requestRow?.status).toLowerCase();
+    const requestStatus = normalizedStatus === 'accepted' ? 'ACCEPTED' : 'REJECTED';
+    const createdAt = normalizeIsoTimestamp(requestRow?.reviewed_at || requestRow?.updated_at || requestRow?.created_at);
+    const postId = normalizeText(requestRow?.post_id);
+    const postTitle = normalizeText(postRow?.title) || 'Collaboration post';
+    const ownerName = normalizeText(ownerUser?.fullName) || normalizeText(ownerUser?.email) || 'Post owner';
+    const idStamp = createdAt || 'unknown';
+    const eventType = requestStatus === 'ACCEPTED'
+        ? 'join_request_accepted'
+        : 'join_request_rejected';
+
+    return {
+        id: `collab-applicant-review-${requestRow.id}-${requestStatus.toLowerCase()}-${idStamp}`,
+        source: 'api',
+        kind: 'collab',
+        eventType,
+        requestStatus,
+        postId,
+        postTitle,
+        requestId: requestRow.id,
+        createdAt,
+        actorUserId: normalizeText(postRow?.author_id) || null,
+        actorName: ownerName,
+        message: normalizeText(requestRow?.message) || null,
+    };
+}
+
+async function getCollabNotificationsForUser(userId, { limit = COLLAB_NOTIFICATION_DEFAULT_LIMIT } = {}) {
+    const normalizedUserId = normalizeText(userId);
+    if (!normalizedUserId) return [];
+
+    const safeLimit = parseIntInRange(limit, COLLAB_NOTIFICATION_DEFAULT_LIMIT, 1, COLLAB_NOTIFICATION_MAX_LIMIT);
+
+    const { data: ownerPostRows, error: ownerPostError } = await supabase
+        .from(CONFIG.tables.posts)
+        .select('id, title, author_id')
+        .eq('type', 'collab')
+        .eq('author_id', normalizedUserId);
+
+    if (ownerPostError) {
+        throw ownerPostError;
+    }
+
+    const ownerPostIdList = (ownerPostRows || [])
+        .map((row) => normalizeText(row?.id))
+        .filter(Boolean);
+    const ownerPostMap = new Map((ownerPostRows || []).map((row) => [String(row.id), row]));
+
+    let ownerPendingRequests = [];
+    if (ownerPostIdList.length) {
+        const { data: pendingRows, error: pendingError } = await supabase
+            .from(CONFIG.tables.collabJoinRequests)
+            .select('id, post_id, user_id, message, status, created_at, updated_at, reviewed_at')
+            .in('post_id', ownerPostIdList)
+            .eq('status', 'pending')
+            .order('created_at', { ascending: false })
+            .limit(safeLimit);
+
+        if (pendingError) {
+            throw pendingError;
+        }
+
+        ownerPendingRequests = pendingRows || [];
+    }
+
+    const { data: applicantDecisionRows, error: applicantDecisionError } = await supabase
+        .from(CONFIG.tables.collabJoinRequests)
+        .select('id, post_id, user_id, message, status, created_at, updated_at, reviewed_at')
+        .eq('user_id', normalizedUserId)
+        .in('status', ['accepted', 'rejected'])
+        .order('reviewed_at', { ascending: false, nullsFirst: false })
+        .order('updated_at', { ascending: false })
+        .limit(safeLimit);
+
+    if (applicantDecisionError) {
+        throw applicantDecisionError;
+    }
+
+    const allPostIds = [
+        ...new Set([
+            ...ownerPostIdList,
+            ...(applicantDecisionRows || []).map((row) => normalizeText(row?.post_id)).filter(Boolean),
+        ]),
+    ];
+
+    const missingPostIds = allPostIds.filter((postId) => !ownerPostMap.has(postId));
+    if (missingPostIds.length) {
+        const { data: extraPostRows, error: extraPostError } = await supabase
+            .from(CONFIG.tables.posts)
+            .select('id, title, author_id')
+            .in('id', missingPostIds);
+
+        if (extraPostError) {
+            throw extraPostError;
+        }
+
+        for (const row of extraPostRows || []) {
+            ownerPostMap.set(String(row.id), row);
+        }
+    }
+
+    const requesterIds = ownerPendingRequests
+        .map((row) => normalizeText(row?.user_id))
+        .filter(Boolean);
+    const reviewerIds = (applicantDecisionRows || [])
+        .map((row) => normalizeText(ownerPostMap.get(String(row.post_id))?.author_id))
+        .filter(Boolean);
+    const allUserIds = [...new Set([...requesterIds, ...reviewerIds])];
+    const userMap = await getUsersByIds(allUserIds);
+
+    const ownerNotifications = ownerPendingRequests.map((requestRow) => buildOwnerPendingJoinRequestNotification({
+        requestRow,
+        postRow: ownerPostMap.get(String(requestRow.post_id)) || null,
+        requesterUser: userMap.get(String(requestRow.user_id)) || null,
+    }));
+
+    const applicantNotifications = (applicantDecisionRows || []).map((requestRow) => {
+        const postRow = ownerPostMap.get(String(requestRow.post_id)) || null;
+        const ownerId = normalizeText(postRow?.author_id);
+        return buildApplicantReviewNotification({
+            requestRow,
+            postRow,
+            ownerUser: ownerId ? (userMap.get(ownerId) || null) : null,
+        });
+    });
+
+    const notifications = [...ownerNotifications, ...applicantNotifications]
+        .filter((item) => Boolean(item?.id))
+        .sort((a, b) => {
+            const diff = getTimestampForSort(b.createdAt) - getTimestampForSort(a.createdAt);
+            if (diff !== 0) return diff;
+            return String(b.id).localeCompare(String(a.id));
+        });
+
+    return notifications.slice(0, safeLimit);
+}
+
 app.get('/', (req, res) => {
     return res.json({
         health: 'Post service OK',
@@ -1224,6 +2192,16 @@ app.get('/', (req, res) => {
         endpoints: [
             'GET /feed',
             'GET /search',
+            'POST /collab-posts',
+            'GET /collab-posts',
+            'GET /collab-posts/:id',
+            'PATCH /collab-posts/:id',
+            'PATCH /collab-posts/:id/status',
+            'POST /collab-posts/:id/join-requests',
+            'GET /collab-posts/:id/join-requests',
+            'PATCH /join-requests/:id',
+            'GET /collab-posts/:id/members',
+            'GET /collab-notifications',
             'GET /posts/:id',
             'POST /posts',
             'PATCH /posts/:id',
@@ -1274,7 +2252,7 @@ app.get('/feed', ensureDb, async (req, res) => {
         const status = typeof req.query.status === 'string'
             ? req.query.status.trim().toLowerCase()
             : '';
-        const type = req.query.type;
+        const type = normalizeText(req.query.type);
         const authorId = normalizeText(req.query.authorId || req.query.author_id);
         const tag = req.query.tag;
         const search = sanitizeSearchTerm(req.query.search || '');
@@ -1330,7 +2308,11 @@ app.get('/feed', ensureDb, async (req, res) => {
             }
 
             if (type) {
-                authorQuery = authorQuery.eq('type', type);
+                if (isCollabType(type)) {
+                    authorQuery = authorQuery.in('type', ['collab', 'COLLAB']);
+                } else {
+                    authorQuery = authorQuery.eq('type', type);
+                }
             }
 
             if (tagFilteredPostIds) {
@@ -1392,7 +2374,11 @@ app.get('/feed', ensureDb, async (req, res) => {
         }
 
         if (type) {
-            query = query.eq('type', type);
+            if (isCollabType(type)) {
+                query = query.in('type', ['collab', 'COLLAB']);
+            } else {
+                query = query.eq('type', type);
+            }
         }
 
         if (tagFilteredPostIds) {
@@ -1461,6 +2447,787 @@ async function handleSearchPosts(req, res) {
 
 app.get(['/search', '/posts/search'], ensureDb, ensureSearchDb, handleSearchPosts);
 
+app.post('/collab-posts', ensureDb, ensureAuthenticated, async (req, res) => {
+    let createdPostId = null;
+
+    try {
+        const payload = parseCollabPostPayload(req.body);
+        if (payload.errors.length) {
+            return res.status(400).json({ error: 'Validation failed', details: payload.errors });
+        }
+
+        const nowIso = new Date().toISOString();
+        const postInsertPayload = {
+            type: 'collab',
+            title: payload.postFields.title,
+            summary: payload.postFields.summary,
+            author_id: req.requestUser.id,
+            status: 'published',
+            pinned: false,
+            updated_at: nowIso,
+        };
+
+        const { data: createdPost, error: postInsertError } = await supabase
+            .from(CONFIG.tables.posts)
+            .insert(postInsertPayload)
+            .select('*')
+            .single();
+
+        if (postInsertError) {
+            throw postInsertError;
+        }
+
+        createdPostId = createdPost.id;
+
+        const collabInsertPayload = {
+            post_id: createdPost.id,
+            category: payload.collabFields.category,
+            description: payload.collabFields.description,
+            mode: payload.collabFields.mode,
+            time_commitment_hours_per_week: payload.collabFields.time_commitment_hours_per_week,
+            duration: payload.collabFields.duration,
+            openings: payload.collabFields.openings,
+            preferred_background: payload.collabFields.preferred_background || null,
+            deadline: payload.collabFields.deadline ?? null,
+            status: 'open',
+            contact_method: payload.collabFields.contact_method || null,
+            updated_at: nowIso,
+        };
+
+        const { error: collabInsertError } = await supabase
+            .from(CONFIG.tables.collabPosts)
+            .insert(collabInsertPayload);
+
+        if (collabInsertError) {
+            throw collabInsertError;
+        }
+
+        await replaceCollabSkills(createdPost.id, payload.requiredSkills);
+
+        if (payload.tagsProvided) {
+            await replacePostTags(createdPost.id, payload.tagIds, payload.tagNames);
+        }
+
+        const fullPost = await getCollabPostById(createdPost.id, { requestUserId: req.requestUser.id });
+
+        return res.status(201).json({
+            message: 'Collaboration post created',
+            data: fullPost,
+        });
+    } catch (error) {
+        if (createdPostId) {
+            await supabase
+                .from(CONFIG.tables.posts)
+                .delete()
+                .eq('id', createdPostId)
+                .catch(() => null);
+        }
+        if (isMissingTableError(error)) return collabSchemaError(res);
+        return res.status(500).json({ error: formatSupabaseError(error) });
+    }
+});
+
+app.get('/collab-posts', ensureDb, async (req, res) => {
+    try {
+        const requestUser = getRequestUser(req);
+        const limit = parseIntInRange(req.query.limit, COLLAB_DEFAULT_LIMIT, 1, COLLAB_MAX_LIMIT);
+        const offset = parseIntInRange(req.query.offset, 0, 0, Number.MAX_SAFE_INTEGER);
+        const sort = normalizeCollabSort(req.query.sort);
+        const categoryFilter = normalizeText(req.query.category);
+        const authorIdFilter = normalizeText(req.query.author || req.query.authorId || req.query.author_id);
+        const queryText = sanitizeSearchTerm(req.query.q || req.query.search || '');
+        const skillFilter = normalizeText(req.query.skill || req.query.skillTag || req.query.requiredSkill);
+
+        const modeResult = normalizeCollabMode(req.query.mode, { allowEmpty: true, fieldName: 'mode' });
+        if (modeResult.error) {
+            return res.status(400).json({ error: modeResult.error });
+        }
+
+        const statusResult = normalizeCollabStatus(req.query.status, { allowEmpty: true, fieldName: 'status' });
+        if (statusResult.error) {
+            return res.status(400).json({ error: statusResult.error });
+        }
+
+        let postQuery = supabase
+            .from(CONFIG.tables.posts)
+            .select('*')
+            .eq('type', 'collab')
+            .neq('status', 'archived');
+
+        if (authorIdFilter) {
+            postQuery = postQuery.eq('author_id', authorIdFilter);
+        }
+
+        const { data: postRows, error: postRowsError } = await postQuery;
+        if (postRowsError) {
+            throw postRowsError;
+        }
+
+        if (!Array.isArray(postRows) || postRows.length === 0) {
+            return res.json({
+                data: [],
+                items: [],
+                pagination: {
+                    limit,
+                    offset,
+                    total: 0,
+                    nextCursor: null,
+                },
+                nextCursor: null,
+                meta: {
+                    sort,
+                    filters: {
+                        category: categoryFilter || null,
+                        mode: modeResult.value || null,
+                        status: statusResult.value || null,
+                        skill: skillFilter || null,
+                        authorId: authorIdFilter || null,
+                        q: queryText || null,
+                    },
+                },
+            });
+        }
+
+        const postIds = postRows.map((row) => row.id);
+        let collabQuery = supabase
+            .from(CONFIG.tables.collabPosts)
+            .select('*')
+            .in('post_id', postIds);
+
+        if (categoryFilter) {
+            collabQuery = collabQuery.eq('category', categoryFilter);
+        }
+
+        if (modeResult.value) {
+            collabQuery = collabQuery.eq('mode', modeResult.value);
+        }
+
+        if (statusResult.value) {
+            collabQuery = collabQuery.eq('status', statusResult.value);
+        }
+
+        const { data: collabRows, error: collabRowsError } = await collabQuery;
+        if (collabRowsError) {
+            throw collabRowsError;
+        }
+
+        if (!Array.isArray(collabRows) || collabRows.length === 0) {
+            return res.json({
+                data: [],
+                items: [],
+                pagination: {
+                    limit,
+                    offset,
+                    total: 0,
+                    nextCursor: null,
+                },
+                nextCursor: null,
+                meta: {
+                    sort,
+                    filters: {
+                        category: categoryFilter || null,
+                        mode: modeResult.value || null,
+                        status: statusResult.value || null,
+                        skill: skillFilter || null,
+                        authorId: authorIdFilter || null,
+                        q: queryText || null,
+                    },
+                },
+            });
+        }
+
+        let collabPosts = await buildCollabPosts(postRows, collabRows, { requestUserId: requestUser?.id || null });
+
+        const normalizedQuery = normalizeText(queryText).toLowerCase();
+        if (normalizedQuery) {
+            collabPosts = collabPosts.filter((post) => {
+                const searchable = [
+                    post.title,
+                    post.summary,
+                    post.description,
+                    post.category,
+                    post.preferredBackground,
+                    post.contactMethod,
+                    ...(Array.isArray(post.requiredSkills) ? post.requiredSkills : []),
+                    ...(Array.isArray(post.tags) ? post.tags : []),
+                ]
+                    .join(' ')
+                    .toLowerCase();
+                return searchable.includes(normalizedQuery);
+            });
+        }
+
+        const normalizedSkillFilter = skillFilter.toLowerCase();
+        if (normalizedSkillFilter) {
+            collabPosts = collabPosts.filter((post) => {
+                const skillValues = [
+                    ...(Array.isArray(post.requiredSkills) ? post.requiredSkills : []),
+                    ...(Array.isArray(post.tags) ? post.tags : []),
+                ];
+                return skillValues.some((skill) => String(skill).toLowerCase().includes(normalizedSkillFilter));
+            });
+        }
+
+        collabPosts.sort((a, b) => {
+            if (sort === 'deadline') {
+                const aDeadline = a.joinUntil ? new Date(a.joinUntil).getTime() : Number.POSITIVE_INFINITY;
+                const bDeadline = b.joinUntil ? new Date(b.joinUntil).getTime() : Number.POSITIVE_INFINITY;
+                if (aDeadline !== bDeadline) return aDeadline - bDeadline;
+            }
+
+            const aCreatedAt = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+            const bCreatedAt = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+            if (aCreatedAt !== bCreatedAt) return bCreatedAt - aCreatedAt;
+            return String(b.id).localeCompare(String(a.id));
+        });
+
+        const paginated = collabPosts.slice(offset, offset + limit);
+
+        return res.json({
+            data: paginated,
+            items: paginated,
+            pagination: {
+                limit,
+                offset,
+                total: collabPosts.length,
+                nextCursor: null,
+            },
+            nextCursor: null,
+            meta: {
+                sort,
+                filters: {
+                    category: categoryFilter || null,
+                    mode: modeResult.value || null,
+                    status: statusResult.value || null,
+                    skill: skillFilter || null,
+                    authorId: authorIdFilter || null,
+                    q: queryText || null,
+                },
+            },
+        });
+    } catch (error) {
+        if (isMissingTableError(error)) return collabSchemaError(res);
+        return res.status(500).json({ error: formatSupabaseError(error) });
+    }
+});
+
+app.get('/collab-posts/:id', ensureDb, async (req, res) => {
+    try {
+        const requestUser = getRequestUser(req);
+        const post = await getCollabPostById(req.params.id, { requestUserId: requestUser?.id || null });
+        if (!post) {
+            return res.status(404).json({ error: 'Collaboration post not found' });
+        }
+
+        return res.json({ data: post });
+    } catch (error) {
+        if (isMissingTableError(error)) return collabSchemaError(res);
+        return res.status(500).json({ error: formatSupabaseError(error) });
+    }
+});
+
+app.patch('/collab-posts/:id', ensureDb, ensureAuthenticated, async (req, res) => {
+    try {
+        const postId = normalizeText(req.params.id);
+        if (!postId) {
+            return res.status(400).json({ error: 'post id is required' });
+        }
+
+        const payload = parseCollabPostPayload(req.body, { partial: true });
+        if (payload.errors.length) {
+            return res.status(400).json({ error: 'Validation failed', details: payload.errors });
+        }
+
+        const hasPostFieldUpdates = Object.keys(payload.postFields).length > 0;
+        const hasCollabFieldUpdates = Object.keys(payload.collabFields).length > 0;
+        const hasSkillsUpdates = payload.skillsProvided;
+        const hasTagsUpdates = payload.tagsProvided;
+
+        if (!hasPostFieldUpdates && !hasCollabFieldUpdates && !hasSkillsUpdates && !hasTagsUpdates) {
+            return res.status(400).json({ error: 'No supported fields provided for update' });
+        }
+
+        const meta = await getCollabPostMetaById(postId);
+        if (!meta) {
+            return res.status(404).json({ error: 'Collaboration post not found' });
+        }
+
+        if (!canEditCollabPost(meta, req.requestUser)) {
+            return res.status(403).json({ error: 'Only the post owner can update this collaboration post.' });
+        }
+
+        if (Object.prototype.hasOwnProperty.call(payload.collabFields, 'openings')) {
+            const memberCountByPostId = await getCollabMemberCountByPostIds([postId]);
+            const memberCount = memberCountByPostId.get(postId) || 0;
+            const requestedOpenings = Number(payload.collabFields.openings);
+            if (requestedOpenings < memberCount) {
+                return res.status(400).json({
+                    error: `openings cannot be lower than current member count (${memberCount})`,
+                });
+            }
+        }
+
+        const nowIso = new Date().toISOString();
+
+        if (hasPostFieldUpdates) {
+            const postUpdatePayload = {
+                ...payload.postFields,
+                updated_at: nowIso,
+            };
+
+            const { data: updatedRows, error: postUpdateError } = await supabase
+                .from(CONFIG.tables.posts)
+                .update(postUpdatePayload)
+                .eq('id', postId)
+                .eq('type', 'collab')
+                .select('id');
+
+            if (postUpdateError) {
+                throw postUpdateError;
+            }
+
+            if (!updatedRows || updatedRows.length === 0) {
+                return res.status(404).json({ error: 'Collaboration post not found' });
+            }
+        }
+
+        if (hasCollabFieldUpdates) {
+            const collabUpdatePayload = {
+                ...payload.collabFields,
+                updated_at: nowIso,
+            };
+
+            const { data: updatedRows, error: collabUpdateError } = await supabase
+                .from(CONFIG.tables.collabPosts)
+                .update(collabUpdatePayload)
+                .eq('post_id', postId)
+                .select('post_id');
+
+            if (collabUpdateError) {
+                throw collabUpdateError;
+            }
+
+            if (!updatedRows || updatedRows.length === 0) {
+                return res.status(404).json({ error: 'Collaboration post not found' });
+            }
+        }
+
+        if (hasSkillsUpdates) {
+            await replaceCollabSkills(postId, payload.requiredSkills);
+        }
+
+        if (hasTagsUpdates) {
+            await replacePostTags(postId, payload.tagIds, payload.tagNames);
+        }
+
+        await closeCollabPostWhenFull(postId, { ...meta.collabRow, ...payload.collabFields });
+
+        const post = await getCollabPostById(postId, { requestUserId: req.requestUser.id });
+        return res.json({
+            message: 'Collaboration post updated',
+            data: post,
+        });
+    } catch (error) {
+        if (isMissingTableError(error)) return collabSchemaError(res);
+        return res.status(500).json({ error: formatSupabaseError(error) });
+    }
+});
+
+app.patch('/collab-posts/:id/status', ensureDb, ensureAuthenticated, async (req, res) => {
+    try {
+        const postId = normalizeText(req.params.id);
+        if (!postId) {
+            return res.status(400).json({ error: 'post id is required' });
+        }
+
+        const statusResult = normalizeCollabStatus(req.body?.status, { fieldName: 'status' });
+        if (statusResult.error) {
+            return res.status(400).json({ error: statusResult.error });
+        }
+
+        const meta = await getCollabPostMetaById(postId);
+        if (!meta) {
+            return res.status(404).json({ error: 'Collaboration post not found' });
+        }
+
+        if (!canEditCollabPost(meta, req.requestUser)) {
+            return res.status(403).json({ error: 'Only the post owner can change collaboration status.' });
+        }
+
+        const nowIso = new Date().toISOString();
+        const { data: updatedRows, error: updateError } = await supabase
+            .from(CONFIG.tables.collabPosts)
+            .update({
+                status: statusResult.value,
+                updated_at: nowIso,
+            })
+            .eq('post_id', postId)
+            .select('post_id');
+
+        if (updateError) {
+            throw updateError;
+        }
+
+        if (!updatedRows || updatedRows.length === 0) {
+            return res.status(404).json({ error: 'Collaboration post not found' });
+        }
+
+        const post = await getCollabPostById(postId, { requestUserId: req.requestUser.id });
+        return res.json({
+            message: 'Collaboration status updated',
+            data: post,
+        });
+    } catch (error) {
+        if (isMissingTableError(error)) return collabSchemaError(res);
+        return res.status(500).json({ error: formatSupabaseError(error) });
+    }
+});
+
+app.post('/collab-posts/:id/join-requests', ensureDb, ensureAuthenticated, async (req, res) => {
+    try {
+        const postId = normalizeText(req.params.id);
+        if (!postId) {
+            return res.status(400).json({ error: 'post id is required' });
+        }
+
+        const message = normalizeText(req.body?.message);
+        if (!message) {
+            return res.status(400).json({ error: 'message is required' });
+        }
+        if (message.length < 12) {
+            return res.status(400).json({ error: 'message should be at least 12 characters' });
+        }
+
+        const meta = await getCollabPostMetaById(postId);
+        if (!meta) {
+            return res.status(404).json({ error: 'Collaboration post not found' });
+        }
+
+        if (normalizeText(meta.postRow.status).toLowerCase() === 'archived') {
+            return res.status(400).json({ error: 'Archived collaboration posts cannot receive new requests.' });
+        }
+
+        const isOwner = String(meta.postRow.author_id || '') === String(req.requestUser.id || '');
+        if (isOwner) {
+            return res.status(400).json({ error: 'You cannot request to join your own collaboration post.' });
+        }
+
+        if (normalizeText(meta.collabRow.status).toLowerCase() !== 'open') {
+            return res.status(400).json({ error: 'This collaboration post is currently closed.' });
+        }
+
+        const { data: existingMembership, error: membershipError } = await supabase
+            .from(CONFIG.tables.collabMemberships)
+            .select('id')
+            .eq('post_id', postId)
+            .eq('user_id', req.requestUser.id)
+            .maybeSingle();
+
+        if (membershipError) {
+            throw membershipError;
+        }
+
+        if (existingMembership) {
+            return res.status(400).json({ error: 'You are already a member of this collaboration.' });
+        }
+
+        const { data: existingRequest, error: existingRequestError } = await supabase
+            .from(CONFIG.tables.collabJoinRequests)
+            .select('id, post_id, user_id, message, status, created_at, updated_at, reviewed_at')
+            .eq('post_id', postId)
+            .eq('user_id', req.requestUser.id)
+            .maybeSingle();
+
+        if (existingRequestError) {
+            throw existingRequestError;
+        }
+
+        const nowIso = new Date().toISOString();
+        let savedRequest = null;
+        let responseStatus = 201;
+
+        if (existingRequest) {
+            const currentStatus = normalizeText(existingRequest.status).toLowerCase();
+            if (currentStatus === 'pending') {
+                return res.status(409).json({ error: 'You already have a pending request for this post.' });
+            }
+            if (currentStatus === 'accepted') {
+                return res.status(409).json({ error: 'Your request has already been accepted for this post.' });
+            }
+
+            const { data: updatedRequest, error: updateError } = await supabase
+                .from(CONFIG.tables.collabJoinRequests)
+                .update({
+                    message,
+                    status: 'pending',
+                    created_at: nowIso,
+                    updated_at: nowIso,
+                    reviewed_at: null,
+                })
+                .eq('id', existingRequest.id)
+                .select('id, post_id, user_id, message, status, created_at, updated_at, reviewed_at')
+                .single();
+
+            if (updateError) {
+                throw updateError;
+            }
+
+            savedRequest = updatedRequest;
+            responseStatus = 200;
+        } else {
+            const { data: createdRequest, error: createError } = await supabase
+                .from(CONFIG.tables.collabJoinRequests)
+                .insert({
+                    post_id: postId,
+                    user_id: req.requestUser.id,
+                    message,
+                    status: 'pending',
+                    updated_at: nowIso,
+                    reviewed_at: null,
+                })
+                .select('id, post_id, user_id, message, status, created_at, updated_at, reviewed_at')
+                .single();
+
+            if (createError) {
+                throw createError;
+            }
+
+            savedRequest = createdRequest;
+        }
+
+        const userMap = await getUsersByIds([savedRequest.user_id]);
+        const post = await getCollabPostById(postId, { requestUserId: req.requestUser.id });
+
+        return res.status(responseStatus).json({
+            message: 'Join request submitted',
+            data: mapCollabJoinRequest(savedRequest, userMap),
+            meta: {
+                pendingRequestCount: post?.pendingRequestCount || 0,
+                joinRequestCount: post?.joinRequestCount || 0,
+                memberCount: post?.memberCount || 0,
+                collabStatus: post?.status || 'OPEN',
+            },
+        });
+    } catch (error) {
+        if (isMissingTableError(error)) return collabSchemaError(res);
+        return res.status(500).json({ error: formatSupabaseError(error) });
+    }
+});
+
+app.get('/collab-posts/:id/join-requests', ensureDb, ensureAuthenticated, async (req, res) => {
+    try {
+        const postId = normalizeText(req.params.id);
+        if (!postId) {
+            return res.status(400).json({ error: 'post id is required' });
+        }
+
+        const statusRaw = normalizeText(req.query.status).toLowerCase();
+        const requestedStatus = statusRaw || 'pending';
+        if (requestedStatus !== 'all') {
+            const statusValidation = normalizeJoinRequestStatus(requestedStatus, { fieldName: 'status' });
+            if (statusValidation.error) {
+                return res.status(400).json({ error: statusValidation.error });
+            }
+        }
+
+        const meta = await getCollabPostMetaById(postId);
+        if (!meta) {
+            return res.status(404).json({ error: 'Collaboration post not found' });
+        }
+
+        if (!canEditCollabPost(meta, req.requestUser)) {
+            return res.status(403).json({ error: 'Only the post owner can view join requests.' });
+        }
+
+        const requests = await getCollabJoinRequests(postId, { status: requestedStatus });
+        return res.json({
+            data: requests,
+            meta: {
+                postId,
+                total: requests.length,
+                status: requestedStatus,
+            },
+        });
+    } catch (error) {
+        if (isMissingTableError(error)) return collabSchemaError(res);
+        return res.status(500).json({ error: formatSupabaseError(error) });
+    }
+});
+
+app.patch('/join-requests/:id', ensureDb, ensureAuthenticated, async (req, res) => {
+    try {
+        const requestId = normalizeText(req.params.id);
+        if (!requestId) {
+            return res.status(400).json({ error: 'join request id is required' });
+        }
+
+        const statusResult = normalizeJoinRequestStatus(req.body?.status, { fieldName: 'status' });
+        if (statusResult.error) {
+            return res.status(400).json({ error: statusResult.error });
+        }
+
+        const { data: targetRequest, error: targetRequestError } = await supabase
+            .from(CONFIG.tables.collabJoinRequests)
+            .select('id, post_id, user_id, message, status, created_at, updated_at, reviewed_at')
+            .eq('id', requestId)
+            .maybeSingle();
+
+        if (targetRequestError) {
+            throw targetRequestError;
+        }
+
+        if (!targetRequest) {
+            return res.status(404).json({ error: 'Join request not found' });
+        }
+
+        const meta = await getCollabPostMetaById(targetRequest.post_id);
+        if (!meta) {
+            return res.status(404).json({ error: 'Collaboration post not found' });
+        }
+
+        if (!canEditCollabPost(meta, req.requestUser)) {
+            return res.status(403).json({ error: 'Only the post owner can review join requests.' });
+        }
+
+        const currentRequestStatus = normalizeText(targetRequest.status).toLowerCase();
+        if (currentRequestStatus === 'accepted' && statusResult.value === 'rejected') {
+            return res.status(400).json({
+                error: 'Accepted requests cannot be rejected. Remove membership manually if needed.',
+            });
+        }
+
+        const nowIso = new Date().toISOString();
+
+        if (statusResult.value === 'accepted') {
+            const { data: existingMembership, error: membershipLookupError } = await supabase
+                .from(CONFIG.tables.collabMemberships)
+                .select('id')
+                .eq('post_id', targetRequest.post_id)
+                .eq('user_id', targetRequest.user_id)
+                .maybeSingle();
+
+            if (membershipLookupError) {
+                throw membershipLookupError;
+            }
+
+            if (!existingMembership) {
+                const memberCountByPostId = await getCollabMemberCountByPostIds([targetRequest.post_id]);
+                const memberCount = memberCountByPostId.get(targetRequest.post_id) || 0;
+                const openings = Number.isFinite(Number(meta.collabRow.openings))
+                    ? Math.max(1, Math.trunc(Number(meta.collabRow.openings)))
+                    : 1;
+
+                if (memberCount >= openings) {
+                    return res.status(400).json({ error: 'No openings left for this collaboration post.' });
+                }
+
+                const teamRoleRaw = req.body?.teamRole !== undefined
+                    ? req.body.teamRole
+                    : req.body?.team_role;
+                const teamRole = normalizeText(teamRoleRaw) || null;
+
+                const { error: membershipInsertError } = await supabase
+                    .from(CONFIG.tables.collabMemberships)
+                    .insert({
+                        post_id: targetRequest.post_id,
+                        user_id: targetRequest.user_id,
+                        team_role: teamRole,
+                    });
+
+                if (membershipInsertError) {
+                    throw membershipInsertError;
+                }
+            }
+        }
+
+        const { data: updatedRequest, error: requestUpdateError } = await supabase
+            .from(CONFIG.tables.collabJoinRequests)
+            .update({
+                status: statusResult.value,
+                updated_at: nowIso,
+                reviewed_at: nowIso,
+            })
+            .eq('id', requestId)
+            .select('id, post_id, user_id, message, status, created_at, updated_at, reviewed_at')
+            .single();
+
+        if (requestUpdateError) {
+            throw requestUpdateError;
+        }
+
+        if (statusResult.value === 'accepted') {
+            await closeCollabPostWhenFull(targetRequest.post_id, meta.collabRow);
+        }
+
+        const userMap = await getUsersByIds([updatedRequest.user_id]);
+        const post = await getCollabPostById(targetRequest.post_id, { requestUserId: req.requestUser.id });
+
+        return res.json({
+            message: 'Join request updated',
+            data: mapCollabJoinRequest(updatedRequest, userMap),
+            meta: {
+                postId: targetRequest.post_id,
+                pendingRequestCount: post?.pendingRequestCount || 0,
+                joinRequestCount: post?.joinRequestCount || 0,
+                memberCount: post?.memberCount || 0,
+                collabStatus: post?.status || 'OPEN',
+            },
+        });
+    } catch (error) {
+        if (isMissingTableError(error)) return collabSchemaError(res);
+        return res.status(500).json({ error: formatSupabaseError(error) });
+    }
+});
+
+app.get('/collab-posts/:id/members', ensureDb, async (req, res) => {
+    try {
+        const postId = normalizeText(req.params.id);
+        if (!postId) {
+            return res.status(400).json({ error: 'post id is required' });
+        }
+
+        const meta = await getCollabPostMetaById(postId);
+        if (!meta) {
+            return res.status(404).json({ error: 'Collaboration post not found' });
+        }
+
+        const members = await getCollabMembers(postId);
+        return res.json({
+            data: members,
+            meta: {
+                postId,
+                total: members.length,
+            },
+        });
+    } catch (error) {
+        if (isMissingTableError(error)) return collabSchemaError(res);
+        return res.status(500).json({ error: formatSupabaseError(error) });
+    }
+});
+
+app.get('/collab-notifications', ensureDb, ensureAuthenticated, async (req, res) => {
+    try {
+        const limit = parseIntInRange(
+            req.query.limit,
+            COLLAB_NOTIFICATION_DEFAULT_LIMIT,
+            1,
+            COLLAB_NOTIFICATION_MAX_LIMIT
+        );
+
+        const notifications = await getCollabNotificationsForUser(req.requestUser.id, { limit });
+        return res.json({
+            data: notifications,
+            meta: {
+                limit,
+                total: notifications.length,
+            },
+        });
+    } catch (error) {
+        if (isMissingTableError(error)) return collabSchemaError(res);
+        return res.status(500).json({ error: formatSupabaseError(error) });
+    }
+});
+
 app.get('/posts/:id', ensureDb, async (req, res) => {
     try {
         const requestUser = getRequestUser(req);
@@ -1489,6 +3256,9 @@ app.get('/posts/:id', ensureDb, async (req, res) => {
 });
 
 app.post('/posts', ensureDb, async (req, res) => {
+    let createdPostId = null;
+    let createAsCollab = false;
+
     try {
         const payload = buildPostPayload(req.body);
         if (payload.errors.length) {
@@ -1496,6 +3266,19 @@ app.post('/posts', ensureDb, async (req, res) => {
         }
 
         const normalizedType = String(payload.postFields.type || '').toUpperCase();
+        createAsCollab = isCollabType(normalizedType);
+
+        if (createAsCollab) {
+            const requestUser = getRequestUser(req);
+            if (!requestUser?.id) {
+                return res.status(401).json({
+                    error: 'Authentication is required to create COLLAB posts.',
+                });
+            }
+            payload.postFields.type = 'collab';
+            payload.postFields.author_id = requestUser.id;
+        }
+
         if (normalizedType === 'ANNOUNCEMENT' || normalizedType === 'JOB') {
             const requestUser = getRequestUser(req);
             if (!requestUser?.id) {
@@ -1553,6 +3336,8 @@ app.post('/posts', ensureDb, async (req, res) => {
             throw createError;
         }
 
+        createdPostId = createdPost.id;
+
         if (payload.tagsProvided) {
             await replacePostTags(createdPost.id, payload.tagIds, payload.tagNames);
         }
@@ -1561,13 +3346,27 @@ app.post('/posts', ensureDb, async (req, res) => {
             await replacePostRef(createdPost.id, payload.ref);
         }
 
-        const fullPost = await getPostById(createdPost.id);
+        if (createAsCollab) {
+            await ensureDefaultCollabDataForPost(createdPost);
+        }
+
+        const fullPost = createAsCollab
+            ? await getCollabPostById(createdPost.id, { requestUserId: payload.postFields.author_id || null })
+            : await getPostById(createdPost.id);
 
         return res.status(201).json({
             message: 'Post created',
             data: fullPost || mapPost(createdPost),
         });
     } catch (error) {
+        if (createAsCollab && createdPostId) {
+            await supabase
+                .from(CONFIG.tables.posts)
+                .delete()
+                .eq('id', createdPostId)
+                .catch(() => null);
+        }
+        if (isMissingTableError(error)) return collabSchemaError(res);
         return res.status(500).json({ error: formatSupabaseError(error) });
     }
 });
@@ -1582,6 +3381,13 @@ app.patch('/posts/:id', ensureDb, async (req, res) => {
         const hasPostFields = Object.keys(payload.postFields).length > 0;
         const hasTagChanges = payload.tagsProvided;
         const hasRefChanges = payload.refProvided;
+        const hasTypeUpdate = Object.prototype.hasOwnProperty.call(payload.postFields, 'type');
+        if (hasTypeUpdate && isCollabType(payload.postFields.type)) {
+            return res.status(400).json({
+                error: 'Use PATCH /collab-posts/:id to manage collaboration posts.',
+            });
+        }
+
         const isExpiryUpdate = Object.prototype.hasOwnProperty.call(payload.postFields, 'expires_at');
         const isStatusUpdate = Object.prototype.hasOwnProperty.call(payload.postFields, 'status');
         const normalizedNextStatus = isStatusUpdate

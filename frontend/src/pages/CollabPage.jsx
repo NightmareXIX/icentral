@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
 import CollabPostCard from '../components/posts/CollabPostCard';
@@ -6,13 +6,11 @@ import {
   COLLAB_CATEGORIES,
   COLLAB_MODES,
   COLLAB_STATUSES,
-  COLLAB_STORAGE_KEY,
-  COLLAB_UPDATED_EVENT,
   createCollabPost,
   getCollabOpeningsLeft,
   getCollabPendingRequestCount,
   listCollabPosts,
-} from '../utils/collabStorage';
+} from '../utils/collabApi';
 
 const SORT_OPTIONS = {
   OPEN_RECENT: 'OPEN_RECENT',
@@ -116,7 +114,7 @@ function buildDeadlineIso(dateString) {
 }
 
 export default function CollabPage() {
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated } = useAuth();
 
   const [posts, setPosts] = useState([]);
   const [loadingPosts, setLoadingPosts] = useState(true);
@@ -126,31 +124,26 @@ export default function CollabPage() {
   const [filters, setFilters] = useState(initialFilters);
   const [banner, setBanner] = useState({ type: 'idle', message: '' });
 
-  useEffect(() => {
-    function loadPosts() {
-      setPosts(listCollabPosts());
-      setLoadingPosts(false);
+  const loadPosts = useCallback(async (options = {}) => {
+    const { withLoading = true } = options;
+    if (withLoading) setLoadingPosts(true);
+    try {
+      const result = await listCollabPosts({
+        limit: 100,
+        sortBy: SORT_OPTIONS.NEWEST,
+      });
+      const items = Array.isArray(result?.items) ? result.items : [];
+      setPosts(items);
+    } catch (error) {
+      setBanner({ type: 'error', message: `Could not load collaboration posts: ${error.message}` });
+    } finally {
+      if (withLoading) setLoadingPosts(false);
     }
-
-    loadPosts();
-
-    function handleCustomUpdate() {
-      loadPosts();
-    }
-
-    function handleStorageUpdate(event) {
-      if (event.key && event.key !== COLLAB_STORAGE_KEY) return;
-      loadPosts();
-    }
-
-    window.addEventListener(COLLAB_UPDATED_EVENT, handleCustomUpdate);
-    window.addEventListener('storage', handleStorageUpdate);
-
-    return () => {
-      window.removeEventListener(COLLAB_UPDATED_EVENT, handleCustomUpdate);
-      window.removeEventListener('storage', handleStorageUpdate);
-    };
   }, []);
+
+  useEffect(() => {
+    loadPosts();
+  }, [loadPosts]);
 
   const stats = useMemo(() => {
     const openPosts = posts.filter((post) => isOpen(post)).length;
@@ -207,8 +200,8 @@ export default function CollabPage() {
     setFilters(initialFilters);
   }
 
-  function refreshPosts() {
-    setPosts(listCollabPosts());
+  async function refreshPosts() {
+    await loadPosts({ withLoading: true });
   }
 
   function validateForm() {
@@ -282,11 +275,11 @@ export default function CollabPage() {
 
     setSubmitting(true);
     try {
-      createCollabPost(payload, user);
+      await createCollabPost(payload);
       setFormState(initialFormState);
       setFormErrors({});
       setBanner({ type: 'success', message: 'Collaboration post published.' });
-      setPosts(listCollabPosts());
+      await loadPosts({ withLoading: false });
     } catch (error) {
       setBanner({ type: 'error', message: `Could not create collaboration post: ${error.message}` });
     } finally {

@@ -61,11 +61,68 @@ create table if not exists public.post_comments (
     constraint post_comments_content_check check (char_length(trim(content)) > 0)
 );
 
+create table if not exists public.collab_posts (
+    post_id uuid primary key references public.posts(id) on delete cascade,
+    category text not null,
+    description text not null,
+    mode text not null default 'hybrid',
+    time_commitment_hours_per_week integer not null default 1,
+    duration text not null,
+    openings integer not null default 1,
+    preferred_background text,
+    deadline timestamptz,
+    status text not null default 'open',
+    contact_method text,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    constraint collab_posts_mode_check check (mode in ('remote', 'onsite', 'hybrid')),
+    constraint collab_posts_status_check check (status in ('open', 'closed')),
+    constraint collab_posts_openings_check check (openings > 0),
+    constraint collab_posts_time_commitment_check check (time_commitment_hours_per_week > 0),
+    constraint collab_posts_category_check check (char_length(trim(category)) > 0),
+    constraint collab_posts_description_check check (char_length(trim(description)) > 0),
+    constraint collab_posts_duration_check check (char_length(trim(duration)) > 0)
+);
+
+create table if not exists public.collab_skills (
+    id uuid primary key default gen_random_uuid(),
+    post_id uuid not null references public.collab_posts(post_id) on delete cascade,
+    skill text not null,
+    created_at timestamptz not null default now(),
+    constraint collab_skills_skill_check check (char_length(trim(skill)) > 0)
+);
+
+create table if not exists public.collab_join_requests (
+    id uuid primary key default gen_random_uuid(),
+    post_id uuid not null references public.collab_posts(post_id) on delete cascade,
+    user_id uuid not null references public.users(id) on delete cascade,
+    message text,
+    status text not null default 'pending',
+    reviewed_at timestamptz,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    constraint collab_join_requests_status_check check (status in ('pending', 'accepted', 'rejected')),
+    constraint collab_join_requests_message_check check (message is null or char_length(trim(message)) > 0),
+    unique (post_id, user_id)
+);
+
+create table if not exists public.collab_memberships (
+    id uuid primary key default gen_random_uuid(),
+    post_id uuid not null references public.collab_posts(post_id) on delete cascade,
+    user_id uuid not null references public.users(id) on delete cascade,
+    team_role text,
+    created_at timestamptz not null default now(),
+    unique (post_id, user_id)
+);
+
 create index if not exists idx_posts_status_created_at
     on public.posts (status, created_at desc);
 
 create index if not exists idx_posts_pinned_created_at
     on public.posts (pinned desc, created_at desc);
+
+create index if not exists idx_posts_type_status_created_at
+    on public.posts (type, status, created_at desc);
 
 create index if not exists idx_posts_expires_at
     on public.posts (expires_at);
@@ -93,6 +150,39 @@ create index if not exists idx_post_comments_post_created_at
 
 create index if not exists idx_post_comments_author_id
     on public.post_comments (author_id);
+
+create index if not exists idx_collab_posts_category
+    on public.collab_posts (category);
+
+create index if not exists idx_collab_posts_mode_status
+    on public.collab_posts (mode, status);
+
+create index if not exists idx_collab_posts_deadline
+    on public.collab_posts (deadline);
+
+create index if not exists idx_collab_posts_created_at
+    on public.collab_posts (created_at desc);
+
+create index if not exists idx_collab_skills_post_id
+    on public.collab_skills (post_id);
+
+create unique index if not exists idx_collab_skills_post_skill_lower
+    on public.collab_skills (post_id, lower(skill));
+
+create index if not exists idx_collab_skills_skill_lower
+    on public.collab_skills (lower(skill));
+
+create index if not exists idx_collab_join_requests_post_status
+    on public.collab_join_requests (post_id, status, created_at desc);
+
+create index if not exists idx_collab_join_requests_user_id
+    on public.collab_join_requests (user_id);
+
+create index if not exists idx_collab_memberships_post_id
+    on public.collab_memberships (post_id, created_at desc);
+
+create index if not exists idx_collab_memberships_user_id
+    on public.collab_memberships (user_id);
 
 -- Search performance indexes (used by GET /search in post-service).
 create index if not exists idx_posts_search_fts

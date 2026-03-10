@@ -155,6 +155,33 @@ function mapJobNotificationItem(item) {
   };
 }
 
+function mapCollabNotificationItem(item) {
+  const postId = String(item?.postId || '').trim();
+  const postTitle = item?.postTitle || 'a collaboration post';
+  const actorName = item?.actorName || 'A collaborator';
+  const eventType = String(item?.eventType || '').toLowerCase();
+  let title = 'Collaboration update';
+
+  if (eventType === 'join_request_received') {
+    title = `${actorName} requested to join ${postTitle}`;
+  } else if (eventType === 'join_request_accepted') {
+    title = `Your request for ${postTitle} was accepted`;
+  } else if (eventType === 'join_request_rejected') {
+    title = `Your request for ${postTitle} was rejected`;
+  }
+
+  return {
+    id: String(item?.id || ''),
+    source: 'api',
+    kind: 'collab',
+    badge: 'CL',
+    title,
+    subtitle: formatRelativeTime(item?.createdAt),
+    createdAt: item?.createdAt || null,
+    postId,
+  };
+}
+
 function SidebarItem({ item, canAccess }) {
   if (!canAccess) {
     return (
@@ -391,6 +418,20 @@ export default function AppShell() {
           } catch (error) {
             if (error.name !== 'AbortError') {
               console.warn('Could not load job notifications', error);
+            }
+          }
+        }
+
+        if (isAuthenticated) {
+          try {
+            const collabResult = await apiRequest('/posts/collab-notifications?limit=30', {
+              signal: controller.signal,
+            });
+            const collabItems = Array.isArray(collabResult?.data) ? collabResult.data : [];
+            allItems.push(...collabItems.map(mapCollabNotificationItem));
+          } catch (error) {
+            if (error.name !== 'AbortError') {
+              console.warn('Could not load collaboration notifications', error);
             }
           }
         }
