@@ -17,6 +17,8 @@ import PostDetailsPage from './pages/PostDetailsPage';
 import SearchPage from './pages/SearchPage';
 import DashboardPage from './pages/DashboardPage';
 import ProfilePage from './pages/ProfilePage';
+import CollabPage from './pages/CollabPage';
+import CollabDetailsPage from './pages/CollabDetailsPage';
 
 function App() {
   return (
@@ -38,6 +40,8 @@ function App() {
           <Route path="/chat" element={<ChatPage />} />
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/profile/:userId" element={<ProfilePage />} />
+          <Route path="/collaborate" element={<CollabPage />} />
+          <Route path="/collaborate/:collabId" element={<CollabDetailsPage />} />
           <Route
             path="/events"
             element={
@@ -47,19 +51,6 @@ function App() {
                 notes={[
                   { title: 'Planned behavior', body: 'Event-tag and EVENT/EVENT_RECAP posts with RSVP-focused cards later.' },
                   { title: 'Collaboration link', body: 'Collaborate posts related to events will also surface here as requested.' },
-                ]}
-              />
-            }
-          />
-          <Route
-            path="/collaborate"
-            element={
-              <SectionPlaceholderPage
-                title="Collaborate"
-                subtitle="This section is prepared for collaboration/event invitation posts. We will build the posting workflow next."
-                notes={[
-                  { title: 'Post type page', body: 'Users will create collaboration invitations tied to event/research/community activities.' },
-                  { title: 'Cross-surface visibility', body: 'These collaboration posts will also appear in the Events section.' },
                 ]}
               />
             }

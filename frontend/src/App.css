@@ -2058,6 +2058,305 @@
   gap: 14px;
 }
 
+.collab-page {
+  gap: 14px;
+}
+
+.collab-overview-panel {
+  padding: 16px;
+  border-color: rgba(176, 226, 255, 0.18);
+  background:
+    radial-gradient(circle at 84% 14%, rgba(58, 138, 255, 0.15), transparent 50%),
+    linear-gradient(180deg, rgba(15, 31, 42, 0.84), rgba(8, 20, 29, 0.96));
+}
+
+.collab-overview-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
+  gap: 14px;
+  align-items: end;
+}
+
+.collab-overview-head h2 {
+  margin: 4px 0 8px;
+  color: var(--txt);
+  font-size: clamp(1.2rem, 1.15vw + 0.85rem, 1.75rem);
+}
+
+.collab-overview-head p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.collab-overview-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.collab-overview-stat-card {
+  border-radius: 12px;
+  border: 1px solid rgba(176, 226, 255, 0.16);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 10px 11px;
+  display: grid;
+  gap: 4px;
+}
+
+.collab-overview-stat-card span {
+  font-size: 0.77rem;
+  color: var(--muted);
+}
+
+.collab-overview-stat-card strong {
+  font-size: 1.2rem;
+  color: #d9ebff;
+  line-height: 1;
+}
+
+.collab-top-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.collab-composer-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.collab-create-form {
+  gap: 10px;
+}
+
+.required-marker {
+  color: #ffd69b;
+  margin-left: 2px;
+}
+
+.field-error {
+  color: #ffc7c7;
+  font-size: 0.75rem;
+}
+
+.collab-create-actions .btn {
+  min-width: 220px;
+}
+
+.collab-feed-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.collab-feed-filters {
+  grid-template-columns: repeat(5, minmax(0, 1fr)) auto;
+}
+
+.collab-filter-actions {
+  align-self: end;
+}
+
+.collab-feed-grid {
+  grid-template-columns: 1fr;
+  gap: 14px;
+}
+
+.collab-post-card {
+  gap: 12px;
+  border-color: rgba(176, 226, 255, 0.2);
+  background:
+    radial-gradient(circle at 90% 10%, rgba(58, 138, 255, 0.12), transparent 52%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0)),
+    rgba(8, 20, 29, 0.82);
+}
+
+.collab-category-pill {
+  color: #d6e8ff;
+  border-color: rgba(138, 180, 255, 0.24);
+  background: rgba(58, 138, 255, 0.12);
+}
+
+.collab-meta-grid {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.collab-post-card .mini-tag {
+  cursor: default;
+}
+
+.collab-card-actions {
+  align-items: center;
+}
+
+.collab-request-pill {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.68rem;
+}
+
+.collab-request-pill.is-pending {
+  color: #ffe9b5;
+  border-color: rgba(255, 183, 3, 0.36);
+  background: rgba(255, 183, 3, 0.14);
+}
+
+.collab-request-pill.is-accepted {
+  color: #bafef0;
+  border-color: rgba(0, 209, 178, 0.32);
+  background: rgba(0, 209, 178, 0.11);
+}
+
+.collab-request-pill.is-rejected {
+  color: #ffd0d0;
+  border-color: rgba(255, 107, 107, 0.32);
+  background: rgba(255, 107, 107, 0.13);
+}
+
+.collab-details-page {
+  gap: 14px;
+}
+
+.collab-details-panel {
+  gap: 14px;
+  border-color: rgba(176, 226, 255, 0.22);
+  background:
+    radial-gradient(circle at 90% 8%, rgba(58, 138, 255, 0.15), transparent 44%),
+    linear-gradient(180deg, rgba(6, 16, 24, 0.95), rgba(5, 13, 20, 0.96));
+}
+
+.collab-details-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.collab-details-meta-item {
+  border-radius: 12px;
+  border: 1px solid rgba(176, 226, 255, 0.14);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 10px;
+  display: grid;
+  gap: 4px;
+}
+
+.collab-details-meta-item strong {
+  color: #d7ecf8;
+  font-size: 0.77rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.collab-details-meta-item span {
+  color: #d4e8f4;
+}
+
+.collab-detail-section {
+  border-radius: 14px;
+  border: 1px solid rgba(176, 226, 255, 0.15);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.collab-detail-section h4 {
+  margin: 0;
+  color: #e6f6ff;
+  font-size: 1rem;
+}
+
+.collab-full-description {
+  margin: 0;
+  color: #d4e6f1;
+  line-height: 1.58;
+  white-space: pre-wrap;
+}
+
+.collab-detail-actions .btn {
+  flex: 1 1 180px;
+}
+
+.collab-request-status-line {
+  margin: 0;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  color: #d6e8f4;
+}
+
+.collab-join-form textarea {
+  min-height: 116px;
+}
+
+.collab-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.collab-request-list,
+.collab-member-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.collab-request-item,
+.collab-member-item {
+  border-radius: 12px;
+  border: 1px solid rgba(176, 226, 255, 0.14);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 10px;
+  display: grid;
+  gap: 6px;
+}
+
+.collab-request-item-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.collab-request-item-head > div,
+.collab-member-item {
+  min-width: 0;
+}
+
+.collab-request-item strong,
+.collab-member-item strong {
+  color: #e7f6ff;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.collab-request-item small,
+.collab-member-item small {
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.collab-request-item p {
+  margin: 0;
+  color: #d0e4f0;
+  line-height: 1.46;
+  white-space: pre-wrap;
+}
+
+.collab-request-actions .btn {
+  flex: 1 1 150px;
+}
+
 .job-post-card {
   gap: 12px;
 }
@@ -3549,6 +3848,7 @@
   }
 
   .job-portal-overview-head,
+  .collab-overview-head,
   .job-portal-top-grid,
   .job-application-layout,
   .job-applications-layout {
@@ -3634,6 +3934,10 @@
 
   .profile-edit-grid {
     grid-template-columns: 1fr;
+  }
+
+  .collab-details-meta-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .public-profile-page .profile-layout-grid {
@@ -3836,6 +4140,14 @@
   }
 
   .job-overview-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .collab-overview-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .collab-details-meta-grid {
     grid-template-columns: 1fr;
   }
 
