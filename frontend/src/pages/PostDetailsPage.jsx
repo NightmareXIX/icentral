@@ -548,6 +548,7 @@ export default function PostDetailsPage() {
               <div className="post-detail-job-row">
                 <span className="pill">Company: {jobDetails.companyName}</span>
                 <span className="pill">Salary: {jobDetails.salaryRange}</span>
+                {jobDetails.deadline && <span className="pill">Apply by {formatDate(jobDetails.deadline)}</span>}
               </div>
             )}
 

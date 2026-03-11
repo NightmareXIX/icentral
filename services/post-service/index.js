@@ -1,7 +1,9 @@
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
 const jwt = require('jsonwebtoken');
+const nodemailer = require('nodemailer');
 const { query: searchQuery, isDbConfigured: isSearchDbConfigured, closePool: closeSearchDbPool } = require('./db');
+const { buildNewsletterEmailBodies } = require('./newsletterTemplates');
 
 const app = express();
 app.use(express.json({ limit: '5mb' }));
@@ -17,6 +19,8 @@ const COLLAB_NOTIFICATION_DEFAULT_LIMIT = 30;
 const COLLAB_NOTIFICATION_MAX_LIMIT = 100;
 const EVENT_NOTIFICATION_DEFAULT_LIMIT = 30;
 const EVENT_NOTIFICATION_MAX_LIMIT = 100;
+const NEWSLETTER_NOTIFICATION_DEFAULT_LIMIT = 30;
+const NEWSLETTER_NOTIFICATION_MAX_LIMIT = 100;
 const COLLAB_MODES = new Set(['remote', 'onsite', 'hybrid']);
 const COLLAB_STATUSES = new Set(['open', 'closed']);
 const COLLAB_JOIN_REQUEST_STATUSES = new Set(['pending', 'accepted', 'rejected']);
@@ -32,6 +36,22 @@ const EVENT_DEFAULT_SUMMARY = {
     EVENT: 'Event details will be updated soon.',
     EVENT_RECAP: 'Event recap details will be updated soon.',
 };
+const NEWSLETTER_BLOCKED_EMAIL_DOMAINS = new Set([
+    'example.com',
+    'example.net',
+    'example.org',
+    'localhost',
+    'mailinator.com',
+    'tempmail.com',
+    'test.com',
+]);
+const NEWSLETTER_BLOCKED_EMAIL_TLDS = new Set([
+    'example',
+    'invalid',
+    'local',
+    'localhost',
+    'test',
+]);
 
 const CONFIG = {
     supabaseUrl: process.env.SUPABASE_URL,
@@ -52,11 +72,27 @@ const CONFIG = {
         collabJoinRequests: process.env.COLLAB_JOIN_REQUESTS_TABLE || 'collab_join_requests',
         collabMemberships: process.env.COLLAB_MEMBERSHIPS_TABLE || 'collab_memberships',
         alumniVerificationApplications: process.env.ALUMNI_VERIFICATION_TABLE || 'alumni_verification_applications',
+        newsletterIssues: process.env.NEWSLETTER_ISSUES_TABLE || 'newsletter_issues',
+        newsletterSendRuns: process.env.NEWSLETTER_SEND_RUNS_TABLE || 'newsletter_send_runs',
+        newsletterSettings: process.env.NEWSLETTER_SETTINGS_TABLE || 'newsletter_settings',
     },
     feedDefaultLimit: Number(process.env.POST_FEED_DEFAULT_LIMIT) || 20,
     feedMaxLimit: Number(process.env.POST_FEED_MAX_LIMIT) || 100,
     archiveIntervalMs: Number(process.env.POST_ARCHIVE_INTERVAL_MS) || 0,
     jwtSecret: process.env.JWT_SECRET || 'HelloWorldKey',
+    newsletter: {
+        scheduleEnabled: String(process.env.NEWSLETTER_SCHEDULE_ENABLED || 'true').toLowerCase() !== 'false',
+        scheduleIntervalMs: Number(process.env.NEWSLETTER_SCHEDULE_INTERVAL_MS) || (60 * 60 * 1000),
+        timeZone: process.env.NEWSLETTER_TIMEZONE || 'Asia/Dhaka',
+        appBaseUrl: process.env.NEWSLETTER_APP_BASE_URL || 'http://localhost:5173',
+        smtpHost: process.env.SMTP_HOST || '',
+        smtpPort: Number(process.env.SMTP_PORT) || 587,
+        smtpSecure: String(process.env.SMTP_SECURE || 'false').toLowerCase() === 'true',
+        smtpUser: process.env.SMTP_USER || '',
+        smtpPass: process.env.SMTP_PASS || '',
+        smtpFromEmail: process.env.SMTP_FROM_EMAIL || '',
+        smtpFromName: process.env.SMTP_FROM_NAME || 'ICentral Academic Digest',
+    },
 };
 
 function quoteIdentifier(value, label) {
@@ -73,6 +109,8 @@ const DB_TABLE_IDENTIFIERS = (() => {
         posts: `${schema}.${quoteIdentifier(CONFIG.tables.posts, 'posts table')}`,
         tags: `${schema}.${quoteIdentifier(CONFIG.tables.tags, 'tags table')}`,
         postTags: `${schema}.${quoteIdentifier(CONFIG.tables.postTags, 'post_tags table')}`,
+        newsletterIssues: `${schema}.${quoteIdentifier(CONFIG.tables.newsletterIssues, 'newsletter_issues table')}`,
+        newsletterSendRuns: `${schema}.${quoteIdentifier(CONFIG.tables.newsletterSendRuns, 'newsletter_send_runs table')}`,
     };
 })();
 
@@ -82,6 +120,7 @@ const supabase = (CONFIG.supabaseUrl && CONFIG.supabaseKey)
         db: { schema: CONFIG.schema },
     })
     : null;
+let newsletterTransporter = null;
 
 function isSupabaseConfigured() {
     return Boolean(supabase);
@@ -300,6 +339,221 @@ function normalizeText(value) {
     return typeof value === 'string' ? value.trim() : '';
 }
 
+function normalizeIdList(value) {
+    if (!Array.isArray(value)) return [];
+    return [...new Set(value.map((item) => normalizeText(item)).filter(Boolean))];
+}
+
+function normalizeStringList(value) {
+    if (Array.isArray(value)) {
+        return value.map((item) => normalizeText(item)).filter(Boolean);
+    }
+
+    if (typeof value === 'string') {
+        return value
+            .split(/\r?\n|;/)
+            .map((item) => normalizeText(item.replace(/^[-*]\s*/, '')))
+            .filter(Boolean);
+    }
+
+    return [];
+}
+
+function getDatePartsInTimeZone(date = new Date(), timeZone = CONFIG.newsletter.timeZone) {
+    const targetDate = date instanceof Date ? date : new Date(date);
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+        timeZone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    });
+    const parts = formatter.formatToParts(targetDate);
+    const values = {};
+
+    for (const part of parts) {
+        if (part.type === 'literal') continue;
+        values[part.type] = part.value;
+    }
+
+    const year = normalizeText(values.year);
+    const month = normalizeText(values.month);
+    const day = normalizeText(values.day);
+
+    return {
+        year,
+        month,
+        day,
+        issueMonth: year && month ? `${year}-${month}` : '',
+        issueDate: year && month && day ? `${year}-${month}-${day}` : '',
+    };
+}
+
+function formatMonthYearLabelInTimeZone(value, timeZone = CONFIG.newsletter.timeZone) {
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+    return new Intl.DateTimeFormat('en-US', {
+        timeZone,
+        month: 'long',
+        year: 'numeric',
+    }).format(date);
+}
+
+function formatDateLabelInTimeZone(value, timeZone = CONFIG.newsletter.timeZone) {
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+    return new Intl.DateTimeFormat('en-US', {
+        timeZone,
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric',
+    }).format(date);
+}
+
+function formatDateTimeLabelInTimeZone(value, timeZone = CONFIG.newsletter.timeZone) {
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+    return new Intl.DateTimeFormat('en-US', {
+        timeZone,
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+    }).format(date);
+}
+
+function formatIssueDateLabel(issueDate, timeZone = CONFIG.newsletter.timeZone) {
+    const normalized = normalizeText(issueDate);
+    if (!normalized) return '';
+    const probe = new Date(`${normalized}T12:00:00Z`);
+    if (Number.isNaN(probe.getTime())) return normalized;
+    return formatDateLabelInTimeZone(probe, timeZone);
+}
+
+function getNewsletterIssueContext(now = new Date()) {
+    const parts = getDatePartsInTimeZone(now, CONFIG.newsletter.timeZone);
+    return {
+        now: now instanceof Date ? now : new Date(now),
+        nowIso: (now instanceof Date ? now : new Date(now)).toISOString(),
+        issueMonth: parts.issueMonth,
+        issueDate: parts.issueDate,
+        issueMonthLabel: formatMonthYearLabelInTimeZone(now, CONFIG.newsletter.timeZone),
+        issueDateLabel: formatDateLabelInTimeZone(now, CONFIG.newsletter.timeZone),
+        day: Number.parseInt(parts.day || '0', 10) || 0,
+    };
+}
+
+function truncateNewsletterText(value, maxLength = 220) {
+    const normalized = normalizeText(value).replace(/\s+/g, ' ');
+    if (!normalized) return '';
+    if (normalized.length <= maxLength) return normalized;
+    return `${normalized.slice(0, Math.max(0, maxLength - 3)).trim()}...`;
+}
+
+function safeNewsletterCount(value) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return 0;
+    return Math.max(0, Math.trunc(parsed));
+}
+
+function safeInteger(value) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return 0;
+    return Math.trunc(parsed);
+}
+
+function buildAppUrl(path = '') {
+    const baseUrl = String(CONFIG.newsletter.appBaseUrl || '').trim().replace(/\/+$/, '');
+    const normalizedPath = String(path || '').trim();
+    if (!baseUrl) return normalizedPath || '';
+    if (!normalizedPath) return baseUrl;
+    return normalizedPath.startsWith('/')
+        ? `${baseUrl}${normalizedPath}`
+        : `${baseUrl}/${normalizedPath}`;
+}
+
+function findPostRefByService(post, serviceName) {
+    if (!Array.isArray(post?.refs)) return null;
+    const normalizedService = normalizeText(serviceName).toLowerCase();
+    return post.refs.find((ref) => normalizeText(ref?.service).toLowerCase() === normalizedService) || null;
+}
+
+function getJobDetailsForNewsletter(post) {
+    const ref = findPostRefByService(post, 'job-details');
+    const metadata = ref?.metadata && typeof ref.metadata === 'object' ? ref.metadata : {};
+
+    return {
+        jobTitle: normalizeText(metadata.jobTitle) || normalizeText(post?.title) || 'Untitled position',
+        companyName: normalizeText(metadata.companyName) || 'Company not specified',
+        jobDescription: normalizeText(metadata.jobDescription) || normalizeText(post?.summary) || 'No description provided.',
+        salaryRange: normalizeText(metadata.salaryRange) || 'Not specified',
+    };
+}
+
+function getEventDetailsForNewsletter(post) {
+    const ref = findPostRefByService(post, 'event-details');
+    const metadata = ref?.metadata && typeof ref.metadata === 'object' ? ref.metadata : {};
+    const startsAt = normalizeText(
+        metadata.startsAt
+        ?? metadata.startAt
+        ?? metadata.start_date
+        ?? metadata.date
+    );
+    const endsAt = normalizeText(
+        metadata.endsAt
+        ?? metadata.endAt
+        ?? metadata.end_date
+    );
+    const location = normalizeText(
+        metadata.location
+        ?? metadata.venue
+        ?? metadata.place
+        ?? metadata.address
+    );
+    const contactInfo = normalizeText(
+        metadata.contactInfo
+        ?? metadata.contact
+        ?? metadata.contactEmail
+        ?? metadata.contact_email
+    );
+    const rsvpUrl = normalizeText(
+        metadata.rsvpUrl
+        ?? metadata.registrationUrl
+        ?? metadata.rsvp
+    );
+    const organizerNotes = normalizeText(
+        metadata.organizerNotes
+        ?? metadata.notes
+        ?? metadata.description
+    );
+
+    return {
+        startsAt: startsAt || null,
+        endsAt: endsAt || null,
+        location: location || 'Location to be announced',
+        contactInfo: contactInfo || null,
+        rsvpUrl: rsvpUrl || null,
+        organizerNotes: organizerNotes || null,
+        rules: normalizeStringList(metadata.rules ?? metadata.guidelines ?? metadata.instructions),
+    };
+}
+
+function summarizeNewsletterCounts(contentSummary = {}) {
+    const sections = contentSummary?.sections || {};
+    const achievementCount = Array.isArray(sections.achievement) ? sections.achievement.length : 0;
+    const jobCount = Array.isArray(sections.jobs) ? sections.jobs.length : 0;
+    const eventCount = Array.isArray(sections.events) ? sections.events.length : 0;
+    const collabCount = Array.isArray(sections.collabs) ? sections.collabs.length : 0;
+
+    return {
+        achievement: achievementCount,
+        jobs: jobCount,
+        events: eventCount,
+        collabs: collabCount,
+        total: achievementCount + jobCount + eventCount + collabCount,
+    };
+}
+
 function normalizeDate(value, fieldName) {
     if (value === undefined) return { value: undefined };
     if (value === null || value === '') return { value: null };
@@ -463,6 +717,19 @@ function collabSchemaError(res) {
     });
 }
 
+function newsletterSchemaError(res) {
+    return res.status(500).json({
+        error: `Missing newsletter tables. Run services/post-service/schema.sql first.`,
+    });
+}
+
+function newsletterEmailUnavailable(res) {
+    return res.status(503).json({
+        error: 'Newsletter email delivery is not configured',
+        requiredEnv: ['SMTP_HOST', 'SMTP_FROM_EMAIL'],
+    });
+}
+
 function ensureDb(req, res, next) {
     if (!isSupabaseConfigured()) {
         return dbUnavailable(res);
@@ -483,6 +750,13 @@ function ensureAuthenticated(req, res, next) {
         return res.status(401).json({ error: 'Authentication required' });
     }
     req.requestUser = requestUser;
+    return next();
+}
+
+function ensureModerator(req, res, next) {
+    if (!isModeratorRole(req.requestUser?.role)) {
+        return res.status(403).json({ error: 'Only faculty/admin can access this route.' });
+    }
     return next();
 }
 
@@ -515,6 +789,40 @@ function canCreateAnnouncement(role) {
 
 function canCreateJobAsBypassRole(role) {
     return isModeratorRole(role);
+}
+
+function isNewsletterEmailConfigured() {
+    return Boolean(
+        normalizeText(CONFIG.newsletter.smtpHost)
+        && normalizeText(CONFIG.newsletter.smtpFromEmail)
+    );
+}
+
+function getNewsletterTransporter() {
+    if (!isNewsletterEmailConfigured()) {
+        const error = new Error('Newsletter email delivery is not configured.');
+        error.status = 503;
+        error.requiredEnv = ['SMTP_HOST', 'SMTP_FROM_EMAIL'];
+        throw error;
+    }
+
+    if (!newsletterTransporter) {
+        const auth = normalizeText(CONFIG.newsletter.smtpUser)
+            ? {
+                user: CONFIG.newsletter.smtpUser,
+                pass: CONFIG.newsletter.smtpPass,
+            }
+            : undefined;
+
+        newsletterTransporter = nodemailer.createTransport({
+            host: CONFIG.newsletter.smtpHost,
+            port: CONFIG.newsletter.smtpPort,
+            secure: CONFIG.newsletter.smtpSecure,
+            ...(auth ? { auth } : {}),
+        });
+    }
+
+    return newsletterTransporter;
 }
 
 function isCollabType(value) {
@@ -2029,6 +2337,12 @@ function mapCollabPostRecord({
     pendingRequestCount = 0,
     memberCount = 0,
     currentUserRequest = null,
+    score = 0,
+    voteScore = 0,
+    upvoteCount = 0,
+    downvoteCount = 0,
+    commentCount = 0,
+    userVote = null,
 }) {
     const safeOpenings = Number.isFinite(Number(collab?.openings))
         ? Math.max(1, Math.trunc(Number(collab.openings)))
@@ -2100,6 +2414,13 @@ function mapCollabPostRecord({
                 reviewedAt: currentUserRequest.reviewed_at || null,
             }
             : null,
+        score: safeInteger(score),
+        voteScore: safeInteger(voteScore),
+        upvoteCount: safeNewsletterCount(upvoteCount),
+        downvoteCount: safeNewsletterCount(downvoteCount),
+        commentCount: safeNewsletterCount(commentCount),
+        commentsCount: safeNewsletterCount(commentCount),
+        userVote: userVote === 'up' || userVote === 'down' ? userVote : null,
     };
 }
 
@@ -2122,6 +2443,8 @@ async function buildCollabPosts(postRows = [], collabRows = [], { requestUserId 
     const skillsByPostId = await getCollabSkillsByPostIds(postIds);
     const memberCountByPostId = await getCollabMemberCountByPostIds(postIds);
     const requestSummary = await getCollabRequestSummaryByPostIds(postIds, requestUserId);
+    const voteSummaryByPostId = await getVoteSummaryByPostIds(postIds, requestUserId);
+    const commentCountByPostId = await getCommentCountByPostIds(postIds);
 
     return withTags.map((post) => {
         const collab = collabByPostId.get(String(post.id));
@@ -2132,6 +2455,14 @@ async function buildCollabPosts(postRows = [], collabRows = [], { requestUserId 
         const totalRequestCount = requestSummary.totalCountByPostId.get(String(post.id)) || 0;
         const pendingRequestCount = requestSummary.pendingCountByPostId.get(String(post.id)) || 0;
         const currentUserRequest = requestSummary.currentUserRequestByPostId.get(String(post.id)) || null;
+        const voteSummary = voteSummaryByPostId.get(String(post.id)) || {
+            score: 0,
+            voteScore: 0,
+            upvoteCount: 0,
+            downvoteCount: 0,
+            userVote: null,
+        };
+        const commentCount = commentCountByPostId.get(String(post.id)) || 0;
 
         return mapCollabPostRecord({
             post,
@@ -2143,6 +2474,12 @@ async function buildCollabPosts(postRows = [], collabRows = [], { requestUserId 
             pendingRequestCount,
             memberCount,
             currentUserRequest,
+            score: voteSummary.score,
+            voteScore: voteSummary.voteScore,
+            upvoteCount: voteSummary.upvoteCount,
+            downvoteCount: voteSummary.downvoteCount,
+            commentCount,
+            userVote: voteSummary.userVote,
         });
     });
 }
@@ -2487,6 +2824,1050 @@ async function getEventVolunteerNotificationsForUser(userId, { limit = EVENT_NOT
         .slice(0, safeLimit);
 }
 
+function mapNewsletterSendRun(row) {
+    if (!row) return null;
+
+    return {
+        id: row.id,
+        issueId: row.issue_id,
+        triggerType: row.trigger_type,
+        initiatedBy: row.initiated_by || null,
+        subject: row.subject || '',
+        status: row.status || 'running',
+        counts: {
+            totalUsers: safeNewsletterCount(row.total_users),
+            validEmails: safeNewsletterCount(row.valid_emails),
+            skippedInvalidEmails: safeNewsletterCount(row.skipped_invalid_emails),
+            skippedDuplicateEmails: safeNewsletterCount(row.skipped_duplicate_emails),
+            attempted: safeNewsletterCount(row.attempted_count),
+            sent: safeNewsletterCount(row.sent_count),
+            failed: safeNewsletterCount(row.failed_count),
+        },
+        errorMessage: row.error_message || null,
+        startedAt: row.started_at || null,
+        completedAt: row.completed_at || null,
+        createdAt: row.created_at || null,
+        updatedAt: row.updated_at || null,
+    };
+}
+
+function mapNewsletterIssueRow(row, latestRun = null) {
+    if (!row) return null;
+
+    const contentSummary = row.content_summary && typeof row.content_summary === 'object'
+        ? row.content_summary
+        : {};
+    const issueMonth = normalizeText(row.issue_month);
+    const issueDate = normalizeText(row.issue_date);
+    const issueMonthLabel = normalizeText(contentSummary.issueMonthLabel)
+        || (issueMonth ? formatMonthYearLabelInTimeZone(`${issueMonth}-01T12:00:00Z`, CONFIG.newsletter.timeZone) : '');
+    const issueDateLabel = normalizeText(contentSummary.issueDateLabel)
+        || (issueDate ? formatIssueDateLabel(issueDate, CONFIG.newsletter.timeZone) : '');
+
+    return {
+        id: row.id,
+        issueMonth: issueMonth || null,
+        issueDate: issueDate || null,
+        issueMonthLabel: issueMonthLabel || null,
+        issueDateLabel: issueDateLabel || null,
+        subject: row.subject || '',
+        status: row.status || 'draft',
+        publishedAt: row.published_at || null,
+        lastGeneratedAt: row.last_generated_at || null,
+        lastSentAt: row.last_sent_at || null,
+        lastSendTrigger: row.last_send_trigger || null,
+        lastSendInitiatedBy: row.last_send_initiated_by || null,
+        lastSendCounts: row.last_send_counts && typeof row.last_send_counts === 'object'
+            ? row.last_send_counts
+            : {},
+        lastError: row.last_error || null,
+        automaticSendStartedAt: row.automatic_send_started_at || null,
+        automaticSentAt: row.automatic_sent_at || null,
+        createdAt: row.created_at || null,
+        updatedAt: row.updated_at || null,
+        contentSummary,
+        latestRun: latestRun ? mapNewsletterSendRun(latestRun) : null,
+    };
+}
+
+function buildNewsletterSubject(issueMonthLabel) {
+    return `ICentral Academic Digest | ${issueMonthLabel || 'Monthly Issue'}`;
+}
+
+async function getLatestNewsletterSendRunForIssue(issueId) {
+    const normalizedIssueId = normalizeText(issueId);
+    if (!normalizedIssueId) return null;
+
+    const { data, error } = await supabase
+        .from(CONFIG.tables.newsletterSendRuns)
+        .select('*')
+        .eq('issue_id', normalizedIssueId)
+        .order('started_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+    if (error) {
+        throw error;
+    }
+
+    return data || null;
+}
+
+async function getNewsletterIssueByMonth(issueMonth, { includeLatestRun = false } = {}) {
+    const normalizedIssueMonth = normalizeText(issueMonth);
+    if (!normalizedIssueMonth) return null;
+
+    const { data, error } = await supabase
+        .from(CONFIG.tables.newsletterIssues)
+        .select('*')
+        .eq('issue_month', normalizedIssueMonth)
+        .maybeSingle();
+
+    if (error) {
+        throw error;
+    }
+
+    if (!data) return null;
+    if (!includeLatestRun) return data;
+
+    const latestRun = await getLatestNewsletterSendRunForIssue(data.id);
+    return {
+        ...data,
+        latestRun,
+    };
+}
+
+function mapNewsletterSettingsRow(row) {
+    return {
+        autoSendEnabled: row ? Boolean(row.auto_send_enabled) : true,
+        updatedAt: row?.updated_at || null,
+        updatedBy: row?.updated_by || null,
+    };
+}
+
+function buildNewsletterScheduleState(settingsRow) {
+    const mapped = mapNewsletterSettingsRow(settingsRow);
+    const envEnabled = Boolean(CONFIG.newsletter.scheduleEnabled);
+
+    return {
+        ...mapped,
+        envEnabled,
+        effectiveAutoSendEnabled: envEnabled && mapped.autoSendEnabled,
+    };
+}
+
+async function getNewsletterSettingsRow() {
+    const fetchSettingsRow = async () => {
+        const { data, error } = await supabase
+            .from(CONFIG.tables.newsletterSettings)
+            .select('*')
+            .eq('id', true)
+            .maybeSingle();
+
+        if (error) {
+            throw error;
+        }
+
+        return data || null;
+    };
+
+    const existing = await fetchSettingsRow();
+    if (existing) {
+        return existing;
+    }
+
+    const nowIso = new Date().toISOString();
+    const { error: insertError } = await supabase
+        .from(CONFIG.tables.newsletterSettings)
+        .insert({
+            id: true,
+            auto_send_enabled: true,
+            updated_at: nowIso,
+        });
+
+    if (insertError && insertError.code !== '23505') {
+        throw insertError;
+    }
+
+    const created = await fetchSettingsRow();
+    if (!created) {
+        throw new Error('Could not resolve newsletter settings.');
+    }
+
+    return created;
+}
+
+async function getNewsletterScheduleState() {
+    const settingsRow = await getNewsletterSettingsRow();
+    return buildNewsletterScheduleState(settingsRow);
+}
+
+async function updateNewsletterSettings({ autoSendEnabled, updatedBy = null }) {
+    const nowIso = new Date().toISOString();
+    const { data, error } = await supabase
+        .from(CONFIG.tables.newsletterSettings)
+        .upsert({
+            id: true,
+            auto_send_enabled: Boolean(autoSendEnabled),
+            updated_by: updatedBy || null,
+            updated_at: nowIso,
+        }, {
+            onConflict: 'id',
+        })
+        .select('*')
+        .single();
+
+    if (error) {
+        throw error;
+    }
+
+    return data;
+}
+
+async function ensureNewsletterIssuePlaceholder(issueContext) {
+    const normalizedIssueMonth = normalizeText(issueContext?.issueMonth);
+    const normalizedIssueDate = normalizeText(issueContext?.issueDate);
+    if (!normalizedIssueMonth || !normalizedIssueDate) {
+        throw new Error('Issue month and issue date are required for newsletter generation.');
+    }
+
+    const { error } = await supabase
+        .from(CONFIG.tables.newsletterIssues)
+        .insert({
+            issue_month: normalizedIssueMonth,
+            issue_date: normalizedIssueDate,
+            subject: '',
+            html_body: '',
+            text_body: '',
+            content_summary: {
+                issueMonth: normalizedIssueMonth,
+                issueMonthLabel: issueContext.issueMonthLabel || '',
+                issueDate: normalizedIssueDate,
+                issueDateLabel: issueContext.issueDateLabel || '',
+                sections: {
+                    achievement: [],
+                    jobs: [],
+                    events: [],
+                    collabs: [],
+                },
+                counts: {
+                    achievement: 0,
+                    jobs: 0,
+                    events: 0,
+                    collabs: 0,
+                    total: 0,
+                },
+            },
+            last_send_counts: {},
+            updated_at: issueContext.nowIso || new Date().toISOString(),
+        });
+
+    if (error && error.code !== '23505') {
+        throw error;
+    }
+
+    const issueRow = await getNewsletterIssueByMonth(normalizedIssueMonth);
+    if (!issueRow) {
+        throw new Error(`Could not resolve newsletter issue for ${normalizedIssueMonth}.`);
+    }
+
+    return issueRow;
+}
+
+async function updateNewsletterIssueRow(issueId, updates = {}) {
+    const { data, error } = await supabase
+        .from(CONFIG.tables.newsletterIssues)
+        .update(updates)
+        .eq('id', issueId)
+        .select('*')
+        .single();
+
+    if (error) {
+        throw error;
+    }
+
+    return data;
+}
+
+async function createNewsletterSendRun(issueId, triggerType, initiatedBy, subject, nowIso) {
+    const { data, error } = await supabase
+        .from(CONFIG.tables.newsletterSendRuns)
+        .insert({
+            issue_id: issueId,
+            trigger_type: triggerType,
+            initiated_by: initiatedBy || null,
+            subject: subject || '',
+            status: 'running',
+            started_at: nowIso,
+            updated_at: nowIso,
+        })
+        .select('*')
+        .single();
+
+    if (error) {
+        throw error;
+    }
+
+    return data;
+}
+
+async function finalizeNewsletterSendRun(runId, { status, counts, errorMessage = null, completedAt }) {
+    const { data, error } = await supabase
+        .from(CONFIG.tables.newsletterSendRuns)
+        .update({
+            total_users: safeNewsletterCount(counts?.totalUsers),
+            valid_emails: safeNewsletterCount(counts?.validEmails),
+            skipped_invalid_emails: safeNewsletterCount(counts?.skippedInvalidEmails),
+            skipped_duplicate_emails: safeNewsletterCount(counts?.skippedDuplicateEmails),
+            attempted_count: safeNewsletterCount(counts?.attempted),
+            sent_count: safeNewsletterCount(counts?.sent),
+            failed_count: safeNewsletterCount(counts?.failed),
+            status,
+            error_message: errorMessage,
+            completed_at: completedAt,
+            updated_at: completedAt,
+        })
+        .eq('id', runId)
+        .select('*')
+        .single();
+
+    if (error) {
+        throw error;
+    }
+
+    return data;
+}
+
+function sortByUpvotesThenNewest(a, b) {
+    const upvoteDelta = safeNewsletterCount(b?.upvoteCount) - safeNewsletterCount(a?.upvoteCount);
+    if (upvoteDelta !== 0) return upvoteDelta;
+
+    const createdAtA = a?.createdAt ? new Date(a.createdAt).getTime() : 0;
+    const createdAtB = b?.createdAt ? new Date(b.createdAt).getTime() : 0;
+    if (createdAtB !== createdAtA) return createdAtB - createdAtA;
+    return String(b?.id || '').localeCompare(String(a?.id || ''));
+}
+
+async function getPublishedPostsByTypes(types = []) {
+    const normalizedTypes = new Set(
+        (types || [])
+            .map((type) => normalizeText(type).toUpperCase())
+            .filter(Boolean)
+    );
+    if (normalizedTypes.size === 0) return [];
+
+    const { data, error } = await supabase
+        .from(CONFIG.tables.posts)
+        .select('*')
+        .neq('status', 'archived');
+
+    if (error) {
+        throw error;
+    }
+
+    return (data || []).filter((row) => (
+        normalizeText(row?.status).toLowerCase() === 'published'
+        && normalizedTypes.has(normalizeText(row?.type).toUpperCase())
+    ));
+}
+
+async function getPublishedCollabPostRows() {
+    const { data, error } = await supabase
+        .from(CONFIG.tables.posts)
+        .select('*')
+        .neq('status', 'archived');
+
+    if (error) {
+        throw error;
+    }
+
+    return (data || []).filter((row) => (
+        normalizeText(row?.status).toLowerCase() === 'published'
+        && isCollabType(row?.type)
+    ));
+}
+
+async function getCollabRowsByPostIds(postIds = []) {
+    if (!postIds.length) return [];
+
+    const { data, error } = await supabase
+        .from(CONFIG.tables.collabPosts)
+        .select('*')
+        .in('post_id', postIds);
+
+    if (error) {
+        throw error;
+    }
+
+    return data || [];
+}
+
+function buildAchievementNewsletterItem(post) {
+    return {
+        id: post.id,
+        title: normalizeText(post.title) || 'Achievement highlight',
+        summary: truncateNewsletterText(post.summary, 220) || 'A top-rated achievement update from the ICentral community.',
+        authorName: normalizeText(post.authorName) || 'Community member',
+        createdAt: post.createdAt || null,
+        upvoteCount: safeNewsletterCount(post.upvoteCount),
+        path: `/posts/${encodeURIComponent(String(post.id || ''))}`,
+    };
+}
+
+function buildJobNewsletterItem(post) {
+    const details = getJobDetailsForNewsletter(post);
+
+    return {
+        id: post.id,
+        title: details.jobTitle,
+        summary: truncateNewsletterText(details.jobDescription, 220) || 'A current job opportunity from the ICentral community.',
+        companyName: details.companyName,
+        salaryRange: details.salaryRange,
+        deadline: post.expiresAt || null,
+        createdAt: post.createdAt || null,
+        upvoteCount: safeNewsletterCount(post.upvoteCount),
+        path: `/posts/${encodeURIComponent(String(post.id || ''))}`,
+    };
+}
+
+function buildEventNewsletterItem(post) {
+    const details = getEventDetailsForNewsletter(post);
+
+    return {
+        id: post.id,
+        title: normalizeText(post.title) || 'Event highlight',
+        summary: truncateNewsletterText(post.summary || details.organizerNotes, 220) || 'A published event update from the ICentral community.',
+        location: details.location,
+        startsAt: details.startsAt || null,
+        createdAt: post.createdAt || null,
+        upvoteCount: safeNewsletterCount(post.upvoteCount),
+        path: `/posts/${encodeURIComponent(String(post.id || ''))}`,
+    };
+}
+
+function buildCollabNewsletterItem(post) {
+    return {
+        id: post.id,
+        title: normalizeText(post.title) || 'Collaboration opportunity',
+        summary: truncateNewsletterText(post.description || post.summary, 220) || 'A published collaboration post from the ICentral community.',
+        category: normalizeText(post.category) || 'Academic collaboration',
+        creatorName: normalizeText(post?.creator?.name) || normalizeText(post?.author?.fullName) || 'Community member',
+        status: normalizeText(post.status) || '',
+        openingsLeft: safeNewsletterCount(post.openingsLeft),
+        deadline: post.deadline || post.joinUntil || null,
+        createdAt: post.createdAt || null,
+        upvoteCount: safeNewsletterCount(post.upvoteCount),
+        path: `/collaborate/${encodeURIComponent(String(post.id || ''))}`,
+    };
+}
+
+async function buildMonthlyNewsletterContentSummary(issueContext, existingIssue = null) {
+    const issueDate = normalizeText(existingIssue?.issue_date) || normalizeText(issueContext.issueDate);
+    const issueDateLabel = formatIssueDateLabel(issueDate, CONFIG.newsletter.timeZone);
+    const [publishedRows, collabPostRows] = await Promise.all([
+        getPublishedPostsByTypes(['ACHIEVEMENT', 'JOB', 'EVENT']),
+        getPublishedCollabPostRows(),
+    ]);
+
+    const [enrichedPosts, collabRows] = await Promise.all([
+        enrichPosts(publishedRows, { requestUserId: null }),
+        getCollabRowsByPostIds(collabPostRows.map((row) => row.id)),
+    ]);
+
+    const achievements = enrichedPosts
+        .filter((post) => normalizeText(post?.type).toUpperCase() === 'ACHIEVEMENT')
+        .sort(sortByUpvotesThenNewest)
+        .slice(0, 1)
+        .map(buildAchievementNewsletterItem);
+
+    const jobs = enrichedPosts
+        .filter((post) => normalizeText(post?.type).toUpperCase() === 'JOB')
+        .sort(sortByUpvotesThenNewest)
+        .slice(0, 3)
+        .map(buildJobNewsletterItem);
+
+    const events = enrichedPosts
+        .filter((post) => normalizeText(post?.type).toUpperCase() === 'EVENT')
+        .sort(sortByUpvotesThenNewest)
+        .slice(0, 3)
+        .map(buildEventNewsletterItem);
+
+    const collabs = collabPostRows.length > 0
+        ? await buildCollabPosts(collabPostRows, collabRows, { requestUserId: null })
+        : [];
+
+    const collabItems = collabs
+        .sort(sortByUpvotesThenNewest)
+        .slice(0, 3)
+        .map(buildCollabNewsletterItem);
+
+    const contentSummary = {
+        issueMonth: issueContext.issueMonth,
+        issueMonthLabel: issueContext.issueMonthLabel,
+        issueDate,
+        issueDateLabel,
+        generatedAt: issueContext.nowIso,
+        sections: {
+            achievement: achievements,
+            jobs,
+            events,
+            collabs: collabItems,
+        },
+    };
+
+    return {
+        ...contentSummary,
+        counts: summarizeNewsletterCounts(contentSummary),
+    };
+}
+
+function buildNewsletterTemplateSections(contentSummary = {}) {
+    const sections = contentSummary?.sections || {};
+
+    return [
+        {
+            title: 'Achievement of the Month',
+            emptyText: 'No published achievement posts are available for this issue.',
+            items: (Array.isArray(sections.achievement) ? sections.achievement : []).map((item) => ({
+                title: item.title,
+                summary: item.summary,
+                meta: [
+                    item.authorName || 'Community member',
+                    item.createdAt ? `Posted ${formatDateLabelInTimeZone(item.createdAt, CONFIG.newsletter.timeZone)}` : '',
+                    `${safeNewsletterCount(item.upvoteCount)} upvote${safeNewsletterCount(item.upvoteCount) === 1 ? '' : 's'}`,
+                ].filter(Boolean),
+                href: buildAppUrl(item.path),
+                linkLabel: 'Open achievement post',
+            })),
+        },
+        {
+            title: 'Job Opportunities',
+            emptyText: 'No published job posts are available for this issue.',
+            items: (Array.isArray(sections.jobs) ? sections.jobs : []).map((item) => ({
+                title: item.title,
+                summary: item.summary,
+                meta: [
+                    item.companyName,
+                    `Salary: ${item.salaryRange || 'Not specified'}`,
+                    item.deadline ? `Deadline ${formatDateTimeLabelInTimeZone(item.deadline, CONFIG.newsletter.timeZone)}` : '',
+                    `${safeNewsletterCount(item.upvoteCount)} upvote${safeNewsletterCount(item.upvoteCount) === 1 ? '' : 's'}`,
+                ].filter(Boolean),
+                href: buildAppUrl(item.path),
+                linkLabel: 'Open job post',
+            })),
+        },
+        {
+            title: 'Event Highlights',
+            emptyText: 'No published event posts are available for this issue.',
+            items: (Array.isArray(sections.events) ? sections.events : []).map((item) => ({
+                title: item.title,
+                summary: item.summary,
+                meta: [
+                    item.startsAt ? `Event date ${formatDateTimeLabelInTimeZone(item.startsAt, CONFIG.newsletter.timeZone)}` : '',
+                    item.location || 'Location to be announced',
+                    `${safeNewsletterCount(item.upvoteCount)} upvote${safeNewsletterCount(item.upvoteCount) === 1 ? '' : 's'}`,
+                ].filter(Boolean),
+                href: buildAppUrl(item.path),
+                linkLabel: 'Open event post',
+            })),
+        },
+        {
+            title: 'Collaboration Opportunities',
+            emptyText: 'No published collaboration posts are available for this issue.',
+            items: (Array.isArray(sections.collabs) ? sections.collabs : []).map((item) => ({
+                title: item.title,
+                summary: item.summary,
+                meta: [
+                    item.category || 'Academic collaboration',
+                    item.creatorName || 'Community member',
+                    item.status ? `Status: ${item.status}` : '',
+                    Number.isFinite(Number(item.openingsLeft)) ? `Openings left: ${safeNewsletterCount(item.openingsLeft)}` : '',
+                    item.deadline ? `Deadline ${formatDateTimeLabelInTimeZone(item.deadline, CONFIG.newsletter.timeZone)}` : '',
+                    `${safeNewsletterCount(item.upvoteCount)} upvote${safeNewsletterCount(item.upvoteCount) === 1 ? '' : 's'}`,
+                ].filter(Boolean),
+                href: buildAppUrl(item.path),
+                linkLabel: 'Open collaboration post',
+            })),
+        },
+    ];
+}
+
+function buildNewsletterBodies(contentSummary) {
+    const counts = summarizeNewsletterCounts(contentSummary);
+    const introduction = `Here is the ${contentSummary.issueMonthLabel} academic roundup from ICentral. `
+        + `${counts.total} top published community post${counts.total === 1 ? '' : 's'} are highlighted across achievements, jobs, events, and collaboration opportunities.`;
+
+    return buildNewsletterEmailBodies({
+        subject: buildNewsletterSubject(contentSummary.issueMonthLabel),
+        issueMonthLabel: contentSummary.issueMonthLabel,
+        issueDateLabel: contentSummary.issueDateLabel,
+        introduction,
+        sections: buildNewsletterTemplateSections(contentSummary),
+    });
+}
+
+function isSyntacticallyValidEmail(value) {
+    const normalized = normalizeText(value).toLowerCase();
+    if (!normalized || normalized.length > 254) {
+        return false;
+    }
+
+    if (/\s/.test(normalized) || normalized.includes('..')) {
+        return false;
+    }
+
+    const atIndex = normalized.indexOf('@');
+    if (atIndex <= 0 || atIndex !== normalized.lastIndexOf('@') || atIndex === normalized.length - 1) {
+        return false;
+    }
+
+    const localPart = normalized.slice(0, atIndex);
+    const domain = normalized.slice(atIndex + 1);
+    if (!localPart || !domain || localPart.length > 64 || domain.length > 253) {
+        return false;
+    }
+
+    if (localPart.startsWith('.') || localPart.endsWith('.')) {
+        return false;
+    }
+
+    if (!/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+$/i.test(localPart)) {
+        return false;
+    }
+
+    const labels = domain.split('.');
+    if (labels.length < 2) {
+        return false;
+    }
+
+    for (const label of labels) {
+        if (!label || label.length > 63) {
+            return false;
+        }
+        if (label.startsWith('-') || label.endsWith('-')) {
+            return false;
+        }
+        if (!/^[a-z0-9-]+$/i.test(label)) {
+            return false;
+        }
+    }
+
+    const normalizedDomain = labels.join('.');
+    const tld = labels[labels.length - 1];
+    if (!/^[a-z]{2,63}$/i.test(tld)) {
+        return false;
+    }
+
+    if (
+        NEWSLETTER_BLOCKED_EMAIL_DOMAINS.has(normalizedDomain)
+        || NEWSLETTER_BLOCKED_EMAIL_TLDS.has(tld)
+    ) {
+        return false;
+    }
+
+    return true;
+}
+
+async function getNewsletterRecipients({ recipientIds = null } = {}) {
+    const normalizedRecipientIds = Array.isArray(recipientIds) ? normalizeIdList(recipientIds) : null;
+
+    if (Array.isArray(recipientIds) && normalizedRecipientIds.length === 0) {
+        return {
+            totalUsers: 0,
+            validRecipients: [],
+            validEmails: 0,
+            skippedInvalidEmails: 0,
+            skippedDuplicateEmails: 0,
+        };
+    }
+
+    let query = supabase
+        .from(CONFIG.tables.users)
+        .select('id, email, full_name');
+
+    if (Array.isArray(normalizedRecipientIds)) {
+        query = query.in('id', normalizedRecipientIds);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+        throw error;
+    }
+
+    const rows = Array.isArray(data) ? data : [];
+    const seenEmails = new Set();
+    const validRecipients = [];
+    let skippedInvalidEmails = 0;
+    let skippedDuplicateEmails = 0;
+
+    for (const row of rows) {
+        const normalizedEmail = normalizeText(row?.email).toLowerCase();
+
+        if (!normalizedEmail || !isSyntacticallyValidEmail(normalizedEmail)) {
+            skippedInvalidEmails += 1;
+            continue;
+        }
+
+        if (seenEmails.has(normalizedEmail)) {
+            skippedDuplicateEmails += 1;
+            continue;
+        }
+
+        seenEmails.add(normalizedEmail);
+        validRecipients.push({
+            id: row.id,
+            email: normalizedEmail,
+            fullName: normalizeText(row?.full_name) || null,
+        });
+    }
+
+    validRecipients.sort((a, b) => {
+        const labelA = String(a?.fullName || a?.email || '').toLowerCase();
+        const labelB = String(b?.fullName || b?.email || '').toLowerCase();
+        const labelComparison = labelA.localeCompare(labelB);
+        if (labelComparison !== 0) return labelComparison;
+        return String(a?.email || '').localeCompare(String(b?.email || ''));
+    });
+
+    return {
+        totalUsers: rows.length,
+        validRecipients,
+        validEmails: validRecipients.length,
+        skippedInvalidEmails,
+        skippedDuplicateEmails,
+    };
+}
+
+function determineNewsletterRunStatus(counts = {}) {
+    const attempted = safeNewsletterCount(counts.attempted);
+    const sent = safeNewsletterCount(counts.sent);
+    const failed = safeNewsletterCount(counts.failed);
+
+    if (failed > 0 && sent > 0) return 'partial';
+    if (failed > 0) return 'failed';
+    if (attempted === 0) return 'skipped';
+    return 'sent';
+}
+
+function isNewsletterIssueActivelySending(issueRow) {
+    if (normalizeText(issueRow?.status).toLowerCase() !== 'sending') {
+        return false;
+    }
+
+    const updatedAtMs = issueRow?.updated_at
+        ? new Date(issueRow.updated_at).getTime()
+        : issueRow?.updatedAt
+            ? new Date(issueRow.updatedAt).getTime()
+            : NaN;
+
+    if (!Number.isFinite(updatedAtMs)) {
+        return true;
+    }
+
+    return (Date.now() - updatedAtMs) < (30 * 60 * 1000);
+}
+
+async function sendNewsletterToRecipients({ subject, html, text, recipientSet }) {
+    const transporter = getNewsletterTransporter();
+    const resolvedRecipientSet = recipientSet || await getNewsletterRecipients();
+    let attempted = 0;
+    let sent = 0;
+    let failed = 0;
+
+    for (const recipient of resolvedRecipientSet.validRecipients) {
+        attempted += 1;
+
+        try {
+            await transporter.sendMail({
+                from: `"${CONFIG.newsletter.smtpFromName}" <${CONFIG.newsletter.smtpFromEmail}>`,
+                to: recipient.email,
+                subject,
+                html,
+                text,
+            });
+            sent += 1;
+        } catch (error) {
+            failed += 1;
+            console.error(`Newsletter send failed for ${recipient.email}:`, error.message);
+        }
+    }
+
+    return {
+        totalUsers: resolvedRecipientSet.totalUsers,
+        validEmails: resolvedRecipientSet.validEmails,
+        skippedInvalidEmails: resolvedRecipientSet.skippedInvalidEmails,
+        skippedDuplicateEmails: resolvedRecipientSet.skippedDuplicateEmails,
+        attempted,
+        sent,
+        failed,
+    };
+}
+
+async function claimAutomaticNewsletterIssue(issueContext) {
+    const issueRow = await ensureNewsletterIssuePlaceholder(issueContext);
+
+    const { data, error } = await supabase
+        .from(CONFIG.tables.newsletterIssues)
+        .update({
+            automatic_send_started_at: issueContext.nowIso,
+            status: 'sending',
+            updated_at: issueContext.nowIso,
+            last_error: null,
+        })
+        .eq('id', issueRow.id)
+        .is('automatic_sent_at', null)
+        .is('automatic_send_started_at', null)
+        .is('published_at', null)
+        .select('*');
+
+    if (error) {
+        throw error;
+    }
+
+    return Array.isArray(data) && data.length > 0 ? data[0] : null;
+}
+
+function buildNewsletterNotificationTitle(issue) {
+    return `${issue.issueMonthLabel || issue.issueMonth || 'Current'} newsletter published`;
+}
+
+function buildNewsletterNotificationMessage(issue) {
+    const counts = summarizeNewsletterCounts(issue?.contentSummary || {});
+    const parts = [];
+
+    if (counts.achievement > 0) parts.push(`${counts.achievement} achievement`);
+    if (counts.jobs > 0) parts.push(`${counts.jobs} job${counts.jobs === 1 ? '' : 's'}`);
+    if (counts.events > 0) parts.push(`${counts.events} event${counts.events === 1 ? '' : 's'}`);
+    if (counts.collabs > 0) parts.push(`${counts.collabs} collaboration${counts.collabs === 1 ? '' : 's'}`);
+
+    if (parts.length === 0) {
+        return 'A new monthly academic digest was published from current community activity.';
+    }
+
+    return `${parts.join(', ')} highlighted in this issue.`;
+}
+
+function mapNewsletterIssueToNotification(issueRow) {
+    const issue = mapNewsletterIssueRow(issueRow);
+    if (!issue?.id) return null;
+
+    return {
+        id: `newsletter-issue-${issue.id}`,
+        source: 'api',
+        kind: 'newsletter',
+        issueId: issue.id,
+        issueMonth: issue.issueMonth,
+        title: buildNewsletterNotificationTitle(issue),
+        message: buildNewsletterNotificationMessage(issue),
+        createdAt: issue.publishedAt || issue.lastSentAt || issue.createdAt,
+    };
+}
+
+async function getNewsletterNotifications({ limit = NEWSLETTER_NOTIFICATION_DEFAULT_LIMIT } = {}) {
+    const safeLimit = parseIntInRange(
+        limit,
+        NEWSLETTER_NOTIFICATION_DEFAULT_LIMIT,
+        1,
+        NEWSLETTER_NOTIFICATION_MAX_LIMIT
+    );
+
+    const { data, error } = await supabase
+        .from(CONFIG.tables.newsletterIssues)
+        .select('*')
+        .not('published_at', 'is', null)
+        .order('published_at', { ascending: false })
+        .limit(safeLimit);
+
+    if (error) {
+        throw error;
+    }
+
+    return (data || [])
+        .map(mapNewsletterIssueToNotification)
+        .filter(Boolean);
+}
+
+async function sendCurrentMonthNewsletter({
+    triggerType = 'manual',
+    initiatedBy = null,
+    lockedIssueRow = null,
+    recipientIds = null,
+} = {}) {
+    if (!isNewsletterEmailConfigured()) {
+        const error = new Error('Newsletter email delivery is not configured.');
+        error.status = 503;
+        error.requiredEnv = ['SMTP_HOST', 'SMTP_FROM_EMAIL'];
+        throw error;
+    }
+
+    const normalizedRecipientIds = Array.isArray(recipientIds) ? normalizeIdList(recipientIds) : null;
+    if (Array.isArray(recipientIds) && normalizedRecipientIds.length === 0) {
+        const error = new Error('Select at least one recipient.');
+        error.status = 400;
+        throw error;
+    }
+
+    const recipientSet = await getNewsletterRecipients(
+        Array.isArray(normalizedRecipientIds)
+            ? { recipientIds: normalizedRecipientIds }
+            : {}
+    );
+    if (Array.isArray(normalizedRecipientIds) && recipientSet.validRecipients.length === 0) {
+        const error = new Error('No valid recipients matched the selected users.');
+        error.status = 400;
+        throw error;
+    }
+
+    const issueContext = getNewsletterIssueContext(new Date());
+    let issueRow = lockedIssueRow || await ensureNewsletterIssuePlaceholder(issueContext);
+    let sendRun = null;
+
+    const effectiveIssueDate = normalizeText(issueRow?.issue_date) || issueContext.issueDate;
+    const contentSummary = await buildMonthlyNewsletterContentSummary({
+        ...issueContext,
+        issueDate: effectiveIssueDate,
+        issueDateLabel: formatIssueDateLabel(effectiveIssueDate, CONFIG.newsletter.timeZone),
+    }, issueRow);
+    const subject = buildNewsletterSubject(contentSummary.issueMonthLabel);
+    const bodies = buildNewsletterBodies(contentSummary);
+
+    issueRow = await updateNewsletterIssueRow(issueRow.id, {
+        issue_date: effectiveIssueDate,
+        subject,
+        html_body: bodies.html,
+        text_body: bodies.text,
+        content_summary: contentSummary,
+        status: 'sending',
+        last_generated_at: issueContext.nowIso,
+        updated_at: issueContext.nowIso,
+        last_error: null,
+    });
+
+    try {
+        sendRun = await createNewsletterSendRun(issueRow.id, triggerType, initiatedBy, subject, issueContext.nowIso);
+        const counts = await sendNewsletterToRecipients({
+            subject,
+            html: bodies.html,
+            text: bodies.text,
+            recipientSet,
+        });
+        const finalStatus = determineNewsletterRunStatus(counts);
+        const completedAt = new Date().toISOString();
+        const publishable = finalStatus === 'sent' || finalStatus === 'partial' || finalStatus === 'skipped';
+        const issueUpdatePayload = {
+            issue_date: effectiveIssueDate,
+            subject,
+            html_body: bodies.html,
+            text_body: bodies.text,
+            content_summary: contentSummary,
+            status: finalStatus,
+            last_generated_at: issueContext.nowIso,
+            last_sent_at: publishable ? completedAt : issueRow.last_sent_at,
+            last_send_trigger: triggerType,
+            last_send_initiated_by: initiatedBy || null,
+            last_send_counts: counts,
+            last_error: finalStatus === 'partial' ? `${safeNewsletterCount(counts.failed)} recipient email(s) failed.` : null,
+            published_at: issueRow.published_at || (publishable ? completedAt : null),
+            automatic_sent_at: triggerType === 'automatic' && publishable
+                ? completedAt
+                : (issueRow.automatic_sent_at || null),
+            updated_at: completedAt,
+        };
+
+        if (triggerType !== 'automatic') {
+            issueUpdatePayload.automatic_send_started_at = issueRow.automatic_send_started_at || null;
+        }
+
+        issueRow = await updateNewsletterIssueRow(issueRow.id, issueUpdatePayload);
+        sendRun = await finalizeNewsletterSendRun(sendRun.id, {
+            status: finalStatus,
+            counts,
+            completedAt,
+        });
+
+        return {
+            skipped: false,
+            issue: mapNewsletterIssueRow(issueRow, sendRun),
+            run: mapNewsletterSendRun(sendRun),
+            counts,
+        };
+    } catch (error) {
+        const failedAt = new Date().toISOString();
+        const failedCounts = {
+            totalUsers: 0,
+            validEmails: 0,
+            skippedInvalidEmails: 0,
+            skippedDuplicateEmails: 0,
+            attempted: 0,
+            sent: 0,
+            failed: 0,
+        };
+
+        issueRow = await updateNewsletterIssueRow(issueRow.id, {
+            issue_date: effectiveIssueDate,
+            subject,
+            html_body: bodies.html,
+            text_body: bodies.text,
+            content_summary: contentSummary,
+            status: 'failed',
+            last_generated_at: issueContext.nowIso,
+            last_send_trigger: triggerType,
+            last_send_initiated_by: initiatedBy || null,
+            last_send_counts: failedCounts,
+            last_error: error.message || 'Newsletter delivery failed.',
+            updated_at: failedAt,
+        }).catch(() => issueRow);
+
+        if (sendRun?.id) {
+            await finalizeNewsletterSendRun(sendRun.id, {
+                status: 'failed',
+                counts: failedCounts,
+                errorMessage: error.message || 'Newsletter delivery failed.',
+                completedAt: failedAt,
+            }).catch(() => null);
+        }
+
+        throw error;
+    }
+}
+
+async function maybeRunAutomaticMonthlyNewsletter() {
+    if (!CONFIG.newsletter.scheduleEnabled || !isSupabaseConfigured()) {
+        return { skipped: true, reason: 'Newsletter scheduling disabled.' };
+    }
+
+    if (!isNewsletterEmailConfigured()) {
+        return { skipped: true, reason: 'Newsletter email delivery is not configured.' };
+    }
+
+    const scheduleState = await getNewsletterScheduleState();
+    if (!scheduleState.effectiveAutoSendEnabled) {
+        return {
+            skipped: true,
+            reason: scheduleState.envEnabled
+                ? 'Newsletter auto-send is disabled by moderators.'
+                : 'Newsletter scheduling disabled.',
+        };
+    }
+
+    const issueContext = getNewsletterIssueContext(new Date());
+    if (issueContext.day !== 1) {
+        return { skipped: true, reason: 'Automatic newsletter runs only on the first day of the month.' };
+    }
+
+    const lockedIssueRow = await claimAutomaticNewsletterIssue(issueContext);
+    if (!lockedIssueRow) {
+        return { skipped: true, reason: `Automatic newsletter for ${issueContext.issueMonth} has already been processed.` };
+    }
+
+    return sendCurrentMonthNewsletter({
+        triggerType: 'automatic',
+        initiatedBy: null,
+        lockedIssueRow,
+    });
+}
+
 app.get('/', (req, res) => {
     return res.json({
         health: 'Post service OK',
@@ -2506,6 +3887,12 @@ app.get('/', (req, res) => {
             'GET /collab-posts/:id/members',
             'GET /collab-notifications',
             'GET /event-notifications',
+            'GET /newsletter/settings',
+            'PATCH /newsletter/settings',
+            'GET /newsletter/current',
+            'GET /newsletter/recipients',
+            'POST /newsletter/send',
+            'GET /newsletter/notifications',
             'GET /posts/:id',
             'POST /posts',
             'PATCH /posts/:id',
@@ -3557,6 +4944,160 @@ app.get('/event-notifications', ensureDb, ensureAuthenticated, async (req, res) 
     }
 });
 
+app.get('/newsletter/settings', ensureDb, ensureAuthenticated, ensureModerator, async (req, res) => {
+    try {
+        const scheduleState = await getNewsletterScheduleState();
+        return res.json({
+            data: scheduleState,
+        });
+    } catch (error) {
+        if (isMissingTableError(error)) return newsletterSchemaError(res);
+        return res.status(error?.status || 500).json({
+            error: error?.message || formatSupabaseError(error),
+            ...(Array.isArray(error?.requiredEnv) ? { requiredEnv: error.requiredEnv } : {}),
+        });
+    }
+});
+
+app.patch('/newsletter/settings', ensureDb, ensureAuthenticated, ensureModerator, async (req, res) => {
+    try {
+        const autoSendEnabledInput = req.body?.autoSendEnabled ?? req.body?.auto_send_enabled;
+        if (typeof autoSendEnabledInput !== 'boolean') {
+            return res.status(400).json({ error: 'autoSendEnabled must be true or false.' });
+        }
+
+        const updatedSettings = await updateNewsletterSettings({
+            autoSendEnabled: autoSendEnabledInput,
+            updatedBy: req.requestUser.id,
+        });
+
+        return res.json({
+            message: `Newsletter auto-send ${autoSendEnabledInput ? 'enabled' : 'disabled'}.`,
+            data: buildNewsletterScheduleState(updatedSettings),
+        });
+    } catch (error) {
+        if (isMissingTableError(error)) return newsletterSchemaError(res);
+        return res.status(error?.status || 500).json({
+            error: error?.message || formatSupabaseError(error),
+            ...(Array.isArray(error?.requiredEnv) ? { requiredEnv: error.requiredEnv } : {}),
+        });
+    }
+});
+
+app.get('/newsletter/recipients', ensureDb, ensureAuthenticated, ensureModerator, async (req, res) => {
+    try {
+        const recipientSet = await getNewsletterRecipients();
+        return res.json({
+            data: recipientSet.validRecipients,
+            summary: {
+                totalUsers: recipientSet.totalUsers,
+                validEmails: recipientSet.validEmails,
+                skippedInvalidEmails: recipientSet.skippedInvalidEmails,
+                skippedDuplicateEmails: recipientSet.skippedDuplicateEmails,
+            },
+        });
+    } catch (error) {
+        if (isMissingTableError(error)) return newsletterSchemaError(res);
+        return res.status(error?.status || 500).json({
+            error: error?.message || formatSupabaseError(error),
+            ...(Array.isArray(error?.requiredEnv) ? { requiredEnv: error.requiredEnv } : {}),
+        });
+    }
+});
+
+app.get('/newsletter/current', ensureDb, ensureAuthenticated, ensureModerator, async (req, res) => {
+    try {
+        const issueContext = getNewsletterIssueContext(new Date());
+        const existingIssue = await getNewsletterIssueByMonth(issueContext.issueMonth, { includeLatestRun: true });
+        const contentSummary = await buildMonthlyNewsletterContentSummary(issueContext, existingIssue);
+        const scheduleState = await getNewsletterScheduleState();
+
+        return res.json({
+            data: {
+                draft: {
+                    subject: buildNewsletterSubject(contentSummary.issueMonthLabel),
+                    ...contentSummary,
+                },
+                issue: existingIssue
+                    ? mapNewsletterIssueRow(existingIssue, existingIssue.latestRun || null)
+                    : null,
+                settings: scheduleState,
+                meta: {
+                    timeZone: CONFIG.newsletter.timeZone,
+                    smtpConfigured: isNewsletterEmailConfigured(),
+                    scheduleEnabled: CONFIG.newsletter.scheduleEnabled,
+                    autoSendEnabled: scheduleState.autoSendEnabled,
+                    effectiveAutoSendEnabled: scheduleState.effectiveAutoSendEnabled,
+                    automaticDueToday: issueContext.day === 1,
+                    automaticAlreadySent: Boolean(existingIssue?.automatic_sent_at),
+                },
+            },
+        });
+    } catch (error) {
+        if (isMissingTableError(error)) return newsletterSchemaError(res);
+        return res.status(error?.status || 500).json({
+            error: error?.message || formatSupabaseError(error),
+            ...(Array.isArray(error?.requiredEnv) ? { requiredEnv: error.requiredEnv } : {}),
+        });
+    }
+});
+
+app.post('/newsletter/send', ensureDb, ensureAuthenticated, ensureModerator, async (req, res) => {
+    try {
+        if (!isNewsletterEmailConfigured()) {
+            return newsletterEmailUnavailable(res);
+        }
+
+        const issueContext = getNewsletterIssueContext(new Date());
+        const existingIssue = await getNewsletterIssueByMonth(issueContext.issueMonth);
+        if (isNewsletterIssueActivelySending(existingIssue)) {
+            return res.status(409).json({
+                error: 'A newsletter send is already in progress for this month. Refresh and try again shortly.',
+            });
+        }
+
+        const result = await sendCurrentMonthNewsletter({
+            triggerType: 'manual',
+            initiatedBy: req.requestUser.id,
+            recipientIds: Array.isArray(req.body?.recipientIds) ? req.body.recipientIds : null,
+        });
+
+        return res.json({
+            message: 'Newsletter send completed.',
+            data: result,
+        });
+    } catch (error) {
+        if (isMissingTableError(error)) return newsletterSchemaError(res);
+        return res.status(error?.status || 500).json({
+            error: error?.message || formatSupabaseError(error),
+            ...(Array.isArray(error?.requiredEnv) ? { requiredEnv: error.requiredEnv } : {}),
+        });
+    }
+});
+
+app.get('/newsletter/notifications', ensureDb, ensureAuthenticated, async (req, res) => {
+    try {
+        const limit = parseIntInRange(
+            req.query.limit,
+            NEWSLETTER_NOTIFICATION_DEFAULT_LIMIT,
+            1,
+            NEWSLETTER_NOTIFICATION_MAX_LIMIT
+        );
+
+        const notifications = await getNewsletterNotifications({ limit });
+        return res.json({
+            data: notifications,
+            meta: {
+                limit,
+                total: notifications.length,
+            },
+        });
+    } catch (error) {
+        if (isMissingTableError(error)) return newsletterSchemaError(res);
+        return res.status(500).json({ error: formatSupabaseError(error) });
+    }
+});
+
 app.get('/posts/:id', ensureDb, async (req, res) => {
     try {
         const requestUser = getRequestUser(req);
@@ -4313,6 +5854,29 @@ if (CONFIG.archiveIntervalMs > 0 && isSupabaseConfigured()) {
 
     if (typeof archiveTimer.unref === 'function') {
         archiveTimer.unref();
+    }
+}
+
+let newsletterTimer = null;
+if (CONFIG.newsletter.scheduleEnabled && isSupabaseConfigured()) {
+    const runNewsletterSchedule = async () => {
+        try {
+            const result = await maybeRunAutomaticMonthlyNewsletter();
+            if (!result?.skipped) {
+                console.log(`Automatic newsletter completed for ${result?.issue?.issueMonth || 'current month'}.`);
+            }
+        } catch (error) {
+            console.error('Automatic newsletter run failed:', error?.message || formatSupabaseError(error));
+        }
+    };
+
+    runNewsletterSchedule().catch((error) => {
+        console.error('Initial newsletter schedule check failed:', error?.message || formatSupabaseError(error));
+    });
+
+    newsletterTimer = setInterval(runNewsletterSchedule, CONFIG.newsletter.scheduleIntervalMs);
+    if (typeof newsletterTimer.unref === 'function') {
+        newsletterTimer.unref();
     }
 }
 

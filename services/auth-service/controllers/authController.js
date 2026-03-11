@@ -12,6 +12,83 @@ const supabase = createClient(
 
 const JWT_SECRET = process.env.JWT_SECRET || 'HelloWorldKey';
 const ALUMNI_VERIFICATION_TABLE = process.env.ALUMNI_VERIFICATION_TABLE || 'alumni_verification_applications';
+const BLOCKED_EMAIL_DOMAINS = new Set([
+    'example.com',
+    'example.net',
+    'example.org',
+    'localhost',
+    'test.com',
+]);
+const BLOCKED_EMAIL_TLDS = new Set([
+    'example',
+    'invalid',
+    'local',
+    'localhost',
+    'test',
+]);
+
+function normalizeText(value) {
+    return typeof value === 'string' ? value.trim() : '';
+}
+
+function isValidEmailAddress(value) {
+    const normalized = normalizeText(value).toLowerCase();
+    if (!normalized || normalized.length > 254) {
+        return false;
+    }
+
+    if (/\s/.test(normalized) || normalized.includes('..')) {
+        return false;
+    }
+
+    const atIndex = normalized.indexOf('@');
+    if (atIndex <= 0 || atIndex !== normalized.lastIndexOf('@') || atIndex === normalized.length - 1) {
+        return false;
+    }
+
+    const localPart = normalized.slice(0, atIndex);
+    const domain = normalized.slice(atIndex + 1);
+    if (!localPart || !domain || localPart.length > 64 || domain.length > 253) {
+        return false;
+    }
+
+    if (localPart.startsWith('.') || localPart.endsWith('.')) {
+        return false;
+    }
+
+    if (!/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+$/i.test(localPart)) {
+        return false;
+    }
+
+    const labels = domain.split('.');
+    if (labels.length < 2) {
+        return false;
+    }
+
+    for (const label of labels) {
+        if (!label || label.length > 63) {
+            return false;
+        }
+        if (label.startsWith('-') || label.endsWith('-')) {
+            return false;
+        }
+        if (!/^[a-z0-9-]+$/i.test(label)) {
+            return false;
+        }
+    }
+
+    const normalizedDomain = labels.join('.');
+    const tld = labels[labels.length - 1];
+    if (!/^[a-z]{2,63}$/i.test(tld)) {
+        return false;
+    }
+
+    if (BLOCKED_EMAIL_DOMAINS.has(normalizedDomain) || BLOCKED_EMAIL_TLDS.has(tld)) {
+        return false;
+    }
+
+    return true;
+}
 
 function isMissingTableError(error) {
     return error?.code === '42P01';
@@ -48,6 +125,11 @@ async function getAlumniVerificationStatus(userId, role) {
 
 async function signup(req, res) {
     const {university_id, full_name, session, email, phone_number, role, password} = req.body;
+    const normalizedEmail = normalizeText(email).toLowerCase();
+
+    if (!isValidEmailAddress(normalizedEmail)) {
+        return res.status(400).json({success: false, message: 'Provide a valid email address'});
+    }
 
     try {
         const salt = await bcrypt.genSalt(10);
@@ -59,7 +141,7 @@ async function signup(req, res) {
                 university_id,
                 full_name,
                 session,
-                email,
+                email: normalizedEmail,
                 phone_number,
                 role,
                 password_hash: hashedPassword

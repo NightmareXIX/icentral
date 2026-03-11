@@ -11,6 +11,7 @@ const initialPostForm = {
   companyName: '',
   jobDescription: '',
   salaryRange: '',
+  expiresAt: '',
 };
 
 const FEED_PAGE_LIMIT = 50;
@@ -524,9 +525,21 @@ export default function JobPortalPage() {
     const companyName = postForm.companyName.trim();
     const jobDescription = postForm.jobDescription.trim();
     const salaryRange = postForm.salaryRange.trim();
+    const expiresAtInput = postForm.expiresAt.trim();
 
-    if (!jobTitle || !companyName || !jobDescription || !salaryRange) {
-      setBanner({ type: 'error', message: 'All job fields are required.' });
+    if (!jobTitle || !companyName || !jobDescription || !salaryRange || !expiresAtInput) {
+      setBanner({ type: 'error', message: 'All job fields, including the application deadline, are required.' });
+      return;
+    }
+
+    const expiresAtDate = new Date(expiresAtInput);
+    if (Number.isNaN(expiresAtDate.getTime())) {
+      setBanner({ type: 'error', message: 'Application deadline is invalid.' });
+      return;
+    }
+
+    if (expiresAtDate.getTime() <= Date.now()) {
+      setBanner({ type: 'error', message: 'Application deadline must be in the future.' });
       return;
     }
 
@@ -540,6 +553,7 @@ export default function JobPortalPage() {
       title: jobTitle,
       summary: jobDescription,
       status: 'published',
+      expiresAt: expiresAtDate.toISOString(),
       ref: {
         service: 'job-details',
         entityId: refEntityId,
@@ -619,7 +633,7 @@ export default function JobPortalPage() {
           </p>
 
           <ul className="job-mini-points">
-            <li>Provide title, company, salary range, and description</li>
+            <li>Provide title, company, salary range, description, and deadline</li>
             <li>Applies existing alumni verification and role restrictions</li>
             <li>Posts instantly appear in the Job Portal feed</li>
           </ul>
@@ -757,6 +771,15 @@ export default function JobPortalPage() {
                     disabled={!canCreateJobPost}
                   />
                 </label>
+                <label>
+                  <span>Application Deadline</span>
+                  <input
+                    type="datetime-local"
+                    value={postForm.expiresAt}
+                    onChange={(e) => updatePostField('expiresAt', e.target.value)}
+                    disabled={!canCreateJobPost}
+                  />
+                </label>
               </div>
 
               <div className="job-form-block">
@@ -862,6 +885,7 @@ export default function JobPortalPage() {
 
                   <div className="job-card-meta-row">
                     <span className="pill">Salary: {details.salaryRange}</span>
+                    {details.deadline && <span className="pill">Apply by {formatDate(details.deadline)}</span>}
                     {isOwner && <span className="pill tone-ok">Your post</span>}
                   </div>
 

@@ -47,6 +47,7 @@ export function getJobDetailsFromPost(post) {
     companyName: companyName || 'Company not specified',
     jobDescription: jobDescription || 'No job description provided.',
     salaryRange: salaryRange || 'Not specified',
+    deadline: post?.expiresAt || null,
   };
 }
 

@@ -12,7 +12,6 @@ const FEED_SECTIONS = [
   { key: 'events', label: 'Events', to: '/events', hint: 'Campus events', roles: 'all'},
   { key: 'collaborate', label: 'Collaborate', to: '/collaborate', hint: 'Teams & invites', roles: 'all'},
   { key: 'moderation', label: 'Moderation', to: '/moderation', hint: 'Admin / Faculty', roles: ['admin', 'faculty']},
-  { key: 'newsletter', label: 'Newsletter', to: '/newsletter', hint: 'Curation flow', roles: 'all'},
 ];
 
 async function apiRequest(path, options = {}) {
@@ -179,6 +178,35 @@ function mapCollabNotificationItem(item) {
     subtitle: formatRelativeTime(item?.createdAt),
     createdAt: item?.createdAt || null,
     postId,
+  };
+}
+
+function mapEventNotificationItem(item) {
+  const postId = String(item?.postId || '').trim();
+  const postTitle = item?.postTitle || 'an event post';
+  const actorName = item?.actorName || 'A volunteer';
+
+  return {
+    id: String(item?.id || ''),
+    source: 'api',
+    kind: 'event',
+    badge: 'EV',
+    title: `${actorName} enrolled for ${postTitle}`,
+    subtitle: formatRelativeTime(item?.createdAt),
+    createdAt: item?.createdAt || null,
+    postId,
+  };
+}
+
+function mapNewsletterNotificationItem(item) {
+  return {
+    id: String(item?.id || ''),
+    source: 'api',
+    kind: 'newsletter',
+    badge: 'NL',
+    title: item?.title || 'Monthly newsletter published',
+    subtitle: formatRelativeTime(item?.createdAt),
+    createdAt: item?.createdAt || null,
   };
 }
 
@@ -432,6 +460,34 @@ export default function AppShell() {
           } catch (error) {
             if (error.name !== 'AbortError') {
               console.warn('Could not load collaboration notifications', error);
+            }
+          }
+        }
+
+        if (isAuthenticated) {
+          try {
+            const eventResult = await apiRequest('/posts/event-notifications?limit=30', {
+              signal: controller.signal,
+            });
+            const eventItems = Array.isArray(eventResult?.data) ? eventResult.data : [];
+            allItems.push(...eventItems.map(mapEventNotificationItem));
+          } catch (error) {
+            if (error.name !== 'AbortError') {
+              console.warn('Could not load event notifications', error);
+            }
+          }
+        }
+
+        if (isAuthenticated) {
+          try {
+            const newsletterResult = await apiRequest('/posts/newsletter/notifications?limit=30', {
+              signal: controller.signal,
+            });
+            const newsletterItems = Array.isArray(newsletterResult?.data) ? newsletterResult.data : [];
+            allItems.push(...newsletterItems.map(mapNewsletterNotificationItem));
+          } catch (error) {
+            if (error.name !== 'AbortError') {
+              console.warn('Could not load newsletter notifications', error);
             }
           }
         }

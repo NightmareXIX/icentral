@@ -12,7 +12,6 @@ import AlumniVerificationPage from './pages/AlumniVerificationPage';
 import ModerationPage from './pages/ModerationPage';
 import NotificationsPage from './pages/NotificationsPage';
 import ChatPage from './pages/ChatPage';
-import SectionPlaceholderPage from './pages/SectionPlaceholderPage';
 import PostDetailsPage from './pages/PostDetailsPage';
 import SearchPage from './pages/SearchPage';
 import DashboardPage from './pages/DashboardPage';
@@ -20,6 +19,7 @@ import ProfilePage from './pages/ProfilePage';
 import CollabPage from './pages/CollabPage';
 import CollabDetailsPage from './pages/CollabDetailsPage';
 import EventsPage from './pages/EventsPage';
+import NewsletterPage from './pages/NewsletterPage';
 
 function App() {
   return (
@@ -53,17 +53,16 @@ function App() {
             }
           />
           <Route
-            path="/newsletter"
+            path="/moderation/newsletter"
             element={
-              <SectionPlaceholderPage
-                title="Newsletter"
-                subtitle="Newsletter curation and export workflows will live here. The shell and navigation are ready."
-                notes={[
-                  { title: 'Planned flow', body: 'Curate posts from the feed into newsletter collections and export formatted output.' },
-                  { title: 'Integration', body: 'Will pull selected feed items and later support approval/export tracking.' },
-                ]}
-              />
+              <RequireModerator>
+                <NewsletterPage />
+              </RequireModerator>
             }
+          />
+          <Route
+            path="/newsletter"
+            element={<Navigate to="/moderation/newsletter" replace />}
           />
         </Route>
 

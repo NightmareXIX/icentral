@@ -215,6 +215,21 @@ function mapEventNotificationToCard(notification) {
   };
 }
 
+function mapNewsletterNotificationToCard(notification) {
+  return {
+    id: String(notification?.id || ''),
+    kind: 'newsletter',
+    theme: 'announcement',
+    icon: 'NWS',
+    label: 'Newsletter',
+    title: notification?.title || 'Monthly newsletter published',
+    message: notification?.message || 'A new monthly academic digest is available.',
+    createdAt: notification?.createdAt || null,
+    ctaLabel: 'Open Home Feed',
+    ctaTo: '/home',
+  };
+}
+
 export default function NotificationsPage() {
   const { isAuthenticated, role, user } = useAuth();
   const normalizedRole = String(role || '').toLowerCase();
@@ -315,6 +330,20 @@ export default function NotificationsPage() {
         } catch (error) {
           if (error.name !== 'AbortError') {
             errors.push(`Events: ${error.message}`);
+          }
+        }
+      }
+
+      if (isAuthenticated) {
+        try {
+          const newsletterResult = await apiRequest('/posts/newsletter/notifications?limit=30', {
+            signal: controller.signal,
+          });
+          const newsletterNotifications = Array.isArray(newsletterResult?.data) ? newsletterResult.data : [];
+          allCards.push(...newsletterNotifications.map(mapNewsletterNotificationToCard));
+        } catch (error) {
+          if (error.name !== 'AbortError') {
+            errors.push(`Newsletter: ${error.message}`);
           }
         }
       }

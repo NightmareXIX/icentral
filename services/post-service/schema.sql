@@ -134,6 +134,74 @@ create table if not exists public.collab_memberships (
     unique (post_id, user_id)
 );
 
+create table if not exists public.newsletter_issues (
+    id uuid primary key default gen_random_uuid(),
+    issue_month text not null unique,
+    issue_date date not null,
+    subject text not null default '',
+    html_body text not null default '',
+    text_body text not null default '',
+    content_summary jsonb not null default '{}'::jsonb,
+    status text not null default 'draft',
+    published_at timestamptz,
+    last_generated_at timestamptz,
+    last_sent_at timestamptz,
+    last_send_trigger text,
+    last_send_initiated_by uuid references public.users(id) on delete set null,
+    last_send_counts jsonb not null default '{}'::jsonb,
+    last_error text,
+    automatic_send_started_at timestamptz,
+    automatic_sent_at timestamptz,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    constraint newsletter_issues_issue_month_check check (issue_month ~ '^[0-9]{4}-[0-9]{2}$'),
+    constraint newsletter_issues_status_check check (status in ('draft', 'sending', 'sent', 'partial', 'failed', 'skipped')),
+    constraint newsletter_issues_trigger_check check (last_send_trigger is null or last_send_trigger in ('manual', 'automatic'))
+);
+
+create table if not exists public.newsletter_send_runs (
+    id uuid primary key default gen_random_uuid(),
+    issue_id uuid not null references public.newsletter_issues(id) on delete cascade,
+    trigger_type text not null,
+    initiated_by uuid references public.users(id) on delete set null,
+    subject text not null default '',
+    total_users integer not null default 0,
+    valid_emails integer not null default 0,
+    skipped_invalid_emails integer not null default 0,
+    skipped_duplicate_emails integer not null default 0,
+    attempted_count integer not null default 0,
+    sent_count integer not null default 0,
+    failed_count integer not null default 0,
+    status text not null default 'running',
+    error_message text,
+    started_at timestamptz not null default now(),
+    completed_at timestamptz,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    constraint newsletter_send_runs_trigger_check check (trigger_type in ('manual', 'automatic')),
+    constraint newsletter_send_runs_status_check check (status in ('running', 'sent', 'partial', 'failed', 'skipped')),
+    constraint newsletter_send_runs_total_users_check check (total_users >= 0),
+    constraint newsletter_send_runs_valid_emails_check check (valid_emails >= 0),
+    constraint newsletter_send_runs_skipped_invalid_check check (skipped_invalid_emails >= 0),
+    constraint newsletter_send_runs_skipped_duplicate_check check (skipped_duplicate_emails >= 0),
+    constraint newsletter_send_runs_attempted_check check (attempted_count >= 0),
+    constraint newsletter_send_runs_sent_check check (sent_count >= 0),
+    constraint newsletter_send_runs_failed_check check (failed_count >= 0)
+);
+
+create table if not exists public.newsletter_settings (
+    id boolean primary key default true,
+    auto_send_enabled boolean not null default true,
+    updated_by uuid references public.users(id) on delete set null,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    constraint newsletter_settings_singleton_check check (id = true)
+);
+
+insert into public.newsletter_settings (id, auto_send_enabled)
+values (true, true)
+on conflict (id) do nothing;
+
 create index if not exists idx_posts_status_created_at
     on public.posts (status, created_at desc);
 
@@ -208,6 +276,24 @@ create index if not exists idx_collab_memberships_post_id
 
 create index if not exists idx_collab_memberships_user_id
     on public.collab_memberships (user_id);
+
+create index if not exists idx_newsletter_issues_published_at
+    on public.newsletter_issues (published_at desc);
+
+create index if not exists idx_newsletter_issues_status
+    on public.newsletter_issues (status, updated_at desc);
+
+create index if not exists idx_newsletter_issues_automatic
+    on public.newsletter_issues (issue_month, automatic_sent_at, automatic_send_started_at);
+
+create index if not exists idx_newsletter_send_runs_issue_started
+    on public.newsletter_send_runs (issue_id, started_at desc);
+
+create index if not exists idx_newsletter_send_runs_trigger_started
+    on public.newsletter_send_runs (trigger_type, started_at desc);
+
+create index if not exists idx_newsletter_settings_updated_at
+    on public.newsletter_settings (updated_at desc);
 
 -- Search performance indexes (used by GET /search in post-service).
 create index if not exists idx_posts_search_fts

@@ -1,4 +1,5 @@
 import { startTransition, useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
@@ -29,6 +30,19 @@ async function apiRequest(path, options = {}) {
   return data;
 }
 
+function formatDateTime(value) {
+  if (!value) return 'Not sent';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(date);
+}
+
 export default function ModerationPage() {
   const { isAuthenticated, isModerator } = useAuth();
   const [tags, setTags] = useState([]);
@@ -38,10 +52,12 @@ export default function ModerationPage() {
   const [verificationFilter, setVerificationFilter] = useState('pending');
   const [loadingTags, setLoadingTags] = useState(true);
   const [loadingVerification, setLoadingVerification] = useState(true);
+  const [loadingNewsletter, setLoadingNewsletter] = useState(true);
   const [submittingTag, setSubmittingTag] = useState(false);
   const [busyVerificationId, setBusyVerificationId] = useState(null);
   const [refreshTick, setRefreshTick] = useState(0);
   const [banner, setBanner] = useState({ type: 'idle', message: '' });
+  const [newsletterState, setNewsletterState] = useState(null);
 
   const selectedTagName = (() => {
     if (!selectedTagId) return 'All tags';
@@ -109,6 +125,41 @@ export default function ModerationPage() {
     };
   }, [isModerator, isAuthenticated, verificationFilter, refreshTick]);
 
+  useEffect(() => {
+    let isMounted = true;
+    const controller = new AbortController();
+
+    async function loadNewsletterState() {
+      if (!isModerator || !isAuthenticated) {
+        setNewsletterState(null);
+        setLoadingNewsletter(false);
+        return;
+      }
+
+      setLoadingNewsletter(true);
+      try {
+        const result = await apiRequest('/posts/newsletter/current', {
+          signal: controller.signal,
+        });
+        if (!isMounted) return;
+        startTransition(() => {
+          setNewsletterState(result?.data || null);
+        });
+      } catch (error) {
+        if (!isMounted || error.name === 'AbortError') return;
+        setBanner({ type: 'error', message: `Failed to load newsletter status: ${error.message}` });
+      } finally {
+        if (isMounted) setLoadingNewsletter(false);
+      }
+    }
+
+    loadNewsletterState();
+    return () => {
+      isMounted = false;
+      controller.abort();
+    };
+  }, [isModerator, isAuthenticated, refreshTick]);
+
   async function reviewApplication(id, action) {
     if (!isModerator || !id) return;
     setBusyVerificationId(id);
@@ -166,13 +217,23 @@ export default function ModerationPage() {
     }
   }
 
+  const newsletterDraft = newsletterState?.draft || null;
+  const newsletterIssue = newsletterState?.issue || null;
+  const newsletterMeta = newsletterState?.meta || null;
+  const newsletterSettings = newsletterState?.settings || null;
+  const newsletterIssueLabel = newsletterDraft?.issueMonthLabel || newsletterIssue?.issueMonthLabel || 'Current issue';
+  const newsletterStatusLabel = loadingNewsletter
+    ? 'Loading...'
+    : (newsletterIssue?.status ? String(newsletterIssue.status).toUpperCase() : 'DRAFT');
+  const newsletterHighlightCount = newsletterDraft?.counts?.total ?? 0;
+
   return (
     <div className="moderation-page">
       <section className="panel placeholder-panel">
         <div className="placeholder-hero">
           <p className="eyebrow">Moderator Console</p>
           <h2>Moderation</h2>
-          <p>Manage taxonomy and moderation controls. Tag creation is restricted to moderator roles.</p>
+          <p>Manage publication workflows, taxonomy, and alumni verification from one desk.</p>
         </div>
       </section>
 
@@ -182,6 +243,41 @@ export default function ModerationPage() {
           <button type="button" onClick={() => setBanner({ type: 'idle', message: '' })}>Dismiss</button>
         </section>
       )}
+
+      <section className="panel newsletter-route-card">
+        <div className="newsletter-route-copy">
+          <p className="eyebrow">Newsletter</p>
+          <h3>Monthly Academic Digest</h3>
+          <p>Open the dedicated workspace to preview highlights, choose recipients, and send the issue.</p>
+          <div className="newsletter-outline-row" aria-hidden="true">
+            <span>Achievement</span>
+            <span>Jobs</span>
+            <span>Events</span>
+            <span>Collab</span>
+          </div>
+        </div>
+
+        <div className="newsletter-route-side">
+          <div className="newsletter-route-pills">
+            <span className="pill">{newsletterIssueLabel}</span>
+            <span className="pill">{newsletterStatusLabel}</span>
+            <span className="pill">{loadingNewsletter ? '...' : `${newsletterHighlightCount} highlighted`}</span>
+            {!loadingNewsletter && newsletterIssue?.lastSentAt && (
+              <span className="pill">Last sent {formatDateTime(newsletterIssue.lastSentAt)}</span>
+            )}
+            {!loadingNewsletter && newsletterSettings && !newsletterSettings.effectiveAutoSendEnabled && (
+              <span className="pill tone-muted">Auto-send off</span>
+            )}
+            {!loadingNewsletter && newsletterMeta && !newsletterMeta.smtpConfigured && (
+              <span className="pill tone-warn">SMTP missing</span>
+            )}
+          </div>
+
+          <Link className="btn btn-accent newsletter-route-button" to="/moderation/newsletter">
+            Open newsletter desk
+          </Link>
+        </div>
+      </section>
 
       <section className="panel tag-panel">
         <div className="panel-header">

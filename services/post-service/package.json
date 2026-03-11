@@ -15,6 +15,7 @@
     "@supabase/supabase-js": "^2.97.0",
     "express": "^5.2.1",
     "jsonwebtoken": "^9.0.3",
+    "nodemailer": "^7.0.5",
     "pg": "^8.16.3"
   }
 }
