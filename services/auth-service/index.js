@@ -29,9 +29,12 @@ app.use(express.json());
 const PORT = process.env.PORT || 3004;
 
 const authRoutes = require('./routes/authRoute');
-app.get('/', (req, res) => {
+function healthHandler(req, res) {
     return res.json({ health: 'Auth service OK' });
-});
+}
+
+app.get('/', healthHandler);
+app.get('/health', healthHandler);
 app.use('/auth', authRoutes);
 app.use('/', authRoutes);
 

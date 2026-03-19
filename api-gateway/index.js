@@ -21,6 +21,30 @@ const userServiceUrl = process.env.USER_SERVICE_URL || 'http://localhost:3001';
 const postServiceUrl = process.env.POST_SERVICE_URL || 'http://localhost:3002';
 const jobServiceUrl = process.env.JOB_SERVICE_URL || 'http://localhost:3003';
 const authServiceUrl = process.env.AUTH_SERVICE_URL || 'http://localhost:3004';
+const chatServiceUrl = process.env.CHAT_SERVICE_URL || 'http://localhost:3005';
+
+async function fetchDependencyHealth(service, url, healthPath = '/health') {
+    try {
+        const response = await fetch(`${url}${healthPath}`, {
+            signal: AbortSignal.timeout(5_000),
+        });
+
+        return {
+            service,
+            ok: response.ok,
+            status: response.status,
+            url,
+        };
+    } catch (error) {
+        return {
+            service,
+            ok: false,
+            status: 503,
+            url,
+            error: error?.message || 'Dependency health check failed',
+        };
+    }
+}
 
 app.get('/posts/search', buildServiceProxy(postServiceUrl, {
     pathRewrite: {
@@ -56,7 +80,7 @@ app.use('/jobs', buildServiceProxy(jobServiceUrl));
 app.use('/auth', buildServiceProxy(authServiceUrl));
 
 const chatProxy = buildServiceProxy(
-    process.env.CHAT_SERVICE_URL || 'http://localhost:3005',
+    chatServiceUrl,
     {
         ws: true,
         proxyTimeout: 20_000,
@@ -66,11 +90,22 @@ const chatProxy = buildServiceProxy(
 
 app.use('/chat', chatProxy);
 
-app.get('/health', (req, res) => {
-    return res.json({
+app.get('/health', async (req, res) => {
+    const dependencies = await Promise.all([
+        fetchDependencyHealth('auth-service', authServiceUrl),
+        fetchDependencyHealth('user-service', userServiceUrl),
+        fetchDependencyHealth('post-service', postServiceUrl),
+        fetchDependencyHealth('job-service', jobServiceUrl),
+        fetchDependencyHealth('chat-service', chatServiceUrl),
+    ]);
+
+    const allHealthy = dependencies.every((item) => item.ok);
+
+    return res.status(allHealthy ? 200 : 503).json({
         service: 'api-gateway',
-        status: 'ok',
+        status: allHealthy ? 'ok' : 'degraded',
         routes: ['/auth', '/users', '/posts', '/posts/collab-posts', '/posts/join-requests', '/posts/collab-notifications', '/posts/newsletter', '/jobs', '/chat'],
+        dependencies,
     });
 });
 

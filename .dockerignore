@@ -1,0 +1,11 @@
+.git
+.gitignore
+.env
+.env.*
+**/node_modules
+**/.DS_Store
+**/dist
+**/build
+**/.cache
+**/coverage
+frontend
