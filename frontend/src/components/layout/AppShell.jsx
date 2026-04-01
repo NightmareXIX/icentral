@@ -1,9 +1,15 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/useAuth';
 import { getUnreadJobApplicationNotificationsForUser } from '../../utils/jobPortalStorage';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
+const PRIMARY_NAV_ITEMS = [
+  { key: 'home', label: 'HOME', menuLabel: 'Home', to: '/home', hint: 'Main feed', end: true },
+  { key: 'jobs', label: 'JOBS', menuLabel: 'Jobs', to: '/job-portal', hint: 'Career posts' },
+  { key: 'collab', label: 'COLLAB', menuLabel: 'Collaborate', to: '/collaborate', hint: 'Teams & invites' },
+  { key: 'events', label: 'EVENTS', menuLabel: 'Events', to: '/events', hint: 'Campus events' },
+];
 
 const FEED_SECTIONS = [
   { key: 'home', label: 'Home', to: '/home', hint: 'Main feed', roles: 'all'},
@@ -210,10 +216,12 @@ function mapNewsletterNotificationItem(item) {
   };
 }
 
-function SidebarItem({ item, canAccess }) {
+function SidebarItem({ item, canAccess, onNavigate, className = '' }) {
+  const baseClassName = `feed-menu-item${className ? ` ${className}` : ''}`;
+
   if (!canAccess) {
     return (
-      <div className="feed-menu-item is-locked" aria-disabled="true">
+      <div className={`${baseClassName} is-locked`} aria-disabled="true">
         <div className="feed-menu-title-row">
           <span>{item.icon} {item.label}</span>
           <span className="mini-pill">Locked</span>
@@ -226,8 +234,9 @@ function SidebarItem({ item, canAccess }) {
   return (
     <NavLink
       to={item.to}
-      className={({ isActive }) => `feed-menu-item${isActive ? ' is-active' : ''}`}
-      end={item.to === '/home'}
+      onClick={onNavigate}
+      className={({ isActive }) => `${baseClassName}${isActive ? ' is-active' : ''}`}
+      end={item.end || item.to === '/home'}
     >
       <div className="feed-menu-title-row">
         <span>{item.icon} {item.label}</span>
@@ -241,6 +250,8 @@ export default function AppShell() {
   const navigate = useNavigate();
   const location = useLocation();
   const { user, isAuthenticated, isModerator, clearAuthSession } = useAuth();
+  const mobileDrawerId = useId();
+  const mobileDrawerCloseButtonRef = useRef(null);
   const [globalSearchInput, setGlobalSearchInput] = useState('');
   const [isGlobalSearchSubmitting, setIsGlobalSearchSubmitting] = useState(false);
   const [recentUnseenMessages, setRecentUnseenMessages] = useState([]);
@@ -248,6 +259,7 @@ export default function AppShell() {
   const [recentNotifications, setRecentNotifications] = useState([]);
   const [loadingRecentNotifications, setLoadingRecentNotifications] = useState(true);
   const [avatarImageFailed, setAvatarImageFailed] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   const profileName = user?.full_name || user?.name || 'Guest User';
   const profileAvatarUrl = typeof user?.avatar_url === 'string' ? user.avatar_url.trim() : '';
@@ -265,6 +277,21 @@ export default function AppShell() {
     .map((part) => part[0]?.toUpperCase() || '')
     .join('') || 'GU';
   const showProfileImage = Boolean(profileAvatarUrl) && !avatarImageFailed;
+  const feedSectionItems = useMemo(
+    () => FEED_SECTIONS.map((item) => ({
+      ...item,
+      canAccess: item.roles === 'all' || (Array.isArray(item.roles) && isModerator),
+    })),
+    [isModerator],
+  );
+
+  function closeMobileMenu() {
+    setIsMobileMenuOpen(false);
+  }
+
+  function toggleMobileMenu() {
+    setIsMobileMenuOpen((prev) => !prev);
+  }
 
   function handleLogout() {
     clearAuthSession();
@@ -302,6 +329,43 @@ export default function AppShell() {
   useEffect(() => {
     setAvatarImageFailed(false);
   }, [profileAvatarUrl]);
+
+  useEffect(() => {
+    setIsMobileMenuOpen(false);
+  }, [location.pathname, location.search]);
+
+  useEffect(() => {
+    if (!isMobileMenuOpen) return undefined;
+
+    function handleWindowKeydown(event) {
+      if (event.key === 'Escape') {
+        setIsMobileMenuOpen(false);
+      }
+    }
+
+    window.addEventListener('keydown', handleWindowKeydown);
+    return () => {
+      window.removeEventListener('keydown', handleWindowKeydown);
+    };
+  }, [isMobileMenuOpen]);
+
+  useEffect(() => {
+    if (!isMobileMenuOpen) return undefined;
+
+    mobileDrawerCloseButtonRef.current?.focus();
+
+    const { body, documentElement } = document;
+    const previousBodyOverflow = body.style.overflow;
+    const previousDocumentOverflow = documentElement.style.overflow;
+
+    body.style.overflow = 'hidden';
+    documentElement.style.overflow = 'hidden';
+
+    return () => {
+      body.style.overflow = previousBodyOverflow;
+      documentElement.style.overflow = previousDocumentOverflow;
+    };
+  }, [isMobileMenuOpen]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -547,51 +611,71 @@ export default function AppShell() {
     <div className="social-shell">
       <header className="social-topbar">
         <div className="topbar-left">
+          <button
+            type="button"
+            className="topbar-circle-btn topbar-menu-btn"
+            aria-label={isMobileMenuOpen ? 'Close navigation menu' : 'Open navigation menu'}
+            aria-haspopup="dialog"
+            aria-expanded={isMobileMenuOpen}
+            aria-controls={mobileDrawerId}
+            onClick={toggleMobileMenu}
+          >
+            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+              <path d="M4 6.5h16v2H4zm0 4.75h16v2H4zm0 4.75h16v2H4z" />
+            </svg>
+          </button>
           <Link className="brand-badge topbar-brand-link" to="/home" aria-label="Go to homepage">
             IC
           </Link>
-          <form className="topbar-search" onSubmit={handleGlobalSearchSubmit} role="search" aria-label="Search posts">
-            <span className="topbar-search-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" focusable="false">
-                <path d="M10 3a7 7 0 1 1 0 14a7 7 0 0 1 0-14zm0 2a5 5 0 1 0 .001 10.001A5 5 0 0 0 10 5zm8.707 11.293l2 2a1 1 0 0 1-1.414 1.414l-2-2a1 1 0 0 1 1.414-1.414z" />
-              </svg>
-            </span>
-            <input
-              id="global-search"
-              type="search"
-              placeholder="Search posts..."
-              value={globalSearchInput}
-              onChange={(event) => setGlobalSearchInput(event.target.value)}
-              autoComplete="off"
-            />
-            <button
-              type="submit"
-              className="topbar-search-submit"
-              aria-label="Search"
-              disabled={isGlobalSearchSubmitting}
-            >
-              {isGlobalSearchSubmitting ? (
-                <span className="topbar-search-spinner" aria-hidden="true" />
-              ) : (
-                <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
-                  <path d="M10 3a7 7 0 1 1 0 14a7 7 0 0 1 0-14zm0 2a5 5 0 1 0 .001 10.001A5 5 0 0 0 10 5zm8.707 11.293l2 2a1 1 0 0 1-1.414 1.414l-2-2a1 1 0 0 1 1.414-1.414z" />
-                </svg>
-              )}
-            </button>
-          </form>
         </div>
 
+        <form className="topbar-search" onSubmit={handleGlobalSearchSubmit} role="search" aria-label="Search posts">
+          <span className="topbar-search-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path d="M10 3a7 7 0 1 1 0 14a7 7 0 0 1 0-14zm0 2a5 5 0 1 0 .001 10.001A5 5 0 0 0 10 5zm8.707 11.293l2 2a1 1 0 0 1-1.414 1.414l-2-2a1 1 0 0 1 1.414-1.414z" />
+            </svg>
+          </span>
+          <input
+            id="global-search"
+            type="search"
+            placeholder="Search posts..."
+            value={globalSearchInput}
+            onChange={(event) => setGlobalSearchInput(event.target.value)}
+            autoComplete="off"
+          />
+          <button
+            type="submit"
+            className="topbar-search-submit"
+            aria-label="Search"
+            disabled={isGlobalSearchSubmitting}
+          >
+            {isGlobalSearchSubmitting ? (
+              <span className="topbar-search-spinner" aria-hidden="true" />
+            ) : (
+              <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                <path d="M10 3a7 7 0 1 1 0 14a7 7 0 0 1 0-14zm0 2a5 5 0 1 0 .001 10.001A5 5 0 0 0 10 5zm8.707 11.293l2 2a1 1 0 0 1-1.414 1.414l-2-2a1 1 0 0 1 1.414-1.414z" />
+              </svg>
+            )}
+          </button>
+        </form>
+
         <nav className="topbar-nav" aria-label="Primary">
-          <NavLink to="/home" className={({ isActive }) => `topbar-nav-link${isActive ? ' is-active' : ''}`}>HOME</NavLink>
-          <NavLink to="/job-portal" className={({ isActive }) => `topbar-nav-link${isActive ? ' is-active' : ''}`}>JOBS</NavLink>
-          <NavLink to="/collaborate" className={({ isActive }) => `topbar-nav-link${isActive ? ' is-active' : ''}`}>COLLAB</NavLink>
-          <NavLink to="/events" className={({ isActive }) => `topbar-nav-link${isActive ? ' is-active' : ''}`}>EVENTS</NavLink>
+          {PRIMARY_NAV_ITEMS.map((item) => (
+            <NavLink
+              key={item.key}
+              to={item.to}
+              end={item.end}
+              className={({ isActive }) => `topbar-nav-link${isActive ? ' is-active' : ''}`}
+            >
+              {item.label}
+            </NavLink>
+          ))}
         </nav>
 
         <div className="social-topbar-actions topbar-right">
           <button
             type="button"
-            className="topbar-circle-btn"
+            className="topbar-circle-btn topbar-chat-btn"
             aria-label="Chat"
             onClick={() => navigate('/chat')}
           >
@@ -632,18 +716,152 @@ export default function AppShell() {
             </span>
           </button>
 
-          {isAuthenticated ? (
-            <button type="button" className="btn btn-soft logout-mini-btn" onClick={handleLogout}>
-              Log out
-            </button>
-          ) : (
-            <div className="auth-inline-links">
-              <NavLink to="/login" className="btn btn-soft">Login</NavLink>
-              <NavLink to="/signup" className="btn btn-accent">Signup</NavLink>
-            </div>
-          )}
+          <div className="topbar-session-actions">
+            {isAuthenticated ? (
+              <button type="button" className="btn btn-soft logout-mini-btn" onClick={handleLogout}>
+                Log out
+              </button>
+            ) : (
+              <div className="auth-inline-links">
+                <NavLink to="/login" className="btn btn-soft">Login</NavLink>
+                <NavLink to="/signup" className="btn btn-accent">Signup</NavLink>
+              </div>
+            )}
+          </div>
         </div>
       </header>
+
+      <div className={`mobile-nav-layer${isMobileMenuOpen ? ' is-open' : ''}`} aria-hidden={!isMobileMenuOpen}>
+        <button
+          type="button"
+          className="mobile-nav-scrim"
+          aria-label="Close navigation menu"
+          onClick={closeMobileMenu}
+          tabIndex={isMobileMenuOpen ? 0 : -1}
+        />
+
+        <aside
+          id={mobileDrawerId}
+          className="mobile-nav-drawer"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Mobile navigation"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="mobile-nav-header">
+            <div>
+              <p className="eyebrow">Navigation</p>
+              <h2>Menu</h2>
+            </div>
+            <button
+              ref={mobileDrawerCloseButtonRef}
+              type="button"
+              className="topbar-circle-btn mobile-nav-close-btn"
+              aria-label="Close navigation menu"
+              onClick={closeMobileMenu}
+            >
+              <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                <path d="M6.7 5.3L12 10.6l5.3-5.3l1.4 1.4L13.4 12l5.3 5.3l-1.4 1.4L12 13.4l-5.3 5.3l-1.4-1.4l5.3-5.3l-5.3-5.3z" />
+              </svg>
+            </button>
+          </div>
+
+          <div className="mobile-nav-scroll">
+            <section className="panel sidebar-panel mobile-nav-panel">
+              <div className="panel-header">
+                <div>
+                  <p className="eyebrow">Quick Access</p>
+                  <h3>Primary</h3>
+                </div>
+              </div>
+
+              <nav className="feed-menu-list" aria-label="Mobile primary navigation">
+                {PRIMARY_NAV_ITEMS.map((item) => (
+                  <SidebarItem
+                    key={item.key}
+                    item={{ label: item.menuLabel, to: item.to, hint: item.hint, end: item.end }}
+                    canAccess
+                    onNavigate={closeMobileMenu}
+                    className="mobile-drawer-link"
+                  />
+                ))}
+              </nav>
+            </section>
+
+            <section className="panel sidebar-panel mobile-nav-panel">
+              <div className="panel-header">
+                <div>
+                  <p className="eyebrow">Explore</p>
+                  <h3>Sections</h3>
+                </div>
+              </div>
+
+              <nav className="feed-menu-list" aria-label="Mobile feed sections">
+                {feedSectionItems.map((item) => (
+                  <SidebarItem
+                    key={item.key}
+                    item={item}
+                    canAccess={item.canAccess}
+                    onNavigate={closeMobileMenu}
+                    className="mobile-drawer-link"
+                  />
+                ))}
+              </nav>
+            </section>
+
+            <section className="panel sidebar-panel mobile-nav-panel">
+              <div className="panel-header">
+                <div>
+                  <p className="eyebrow">Account</p>
+                  <h3>{isAuthenticated ? profileName : 'Guest mode'}</h3>
+                </div>
+              </div>
+
+              <div className="feed-menu-list">
+                <SidebarItem
+                  item={{
+                    label: 'Notifications',
+                    to: '/notifications',
+                    hint: 'Updates & alerts',
+                  }}
+                  canAccess
+                  onNavigate={closeMobileMenu}
+                  className="mobile-drawer-link"
+                />
+                {isAuthenticated ? (
+                  <>
+                    <SidebarItem
+                      item={{
+                        label: 'Dashboard',
+                        to: '/dashboard',
+                        hint: 'Profile, posts, and settings',
+                      }}
+                      canAccess
+                      onNavigate={closeMobileMenu}
+                      className="mobile-drawer-link"
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-soft mobile-drawer-action-btn"
+                      onClick={() => {
+                        closeMobileMenu();
+                        handleLogout();
+                      }}
+                    >
+                      Log out
+                    </button>
+                  </>
+                ) : (
+                  <div className="mobile-drawer-auth-actions">
+                    <NavLink to="/login" className="btn btn-soft" onClick={closeMobileMenu}>Login</NavLink>
+                    <NavLink to="/signup" className="btn btn-accent" onClick={closeMobileMenu}>Signup</NavLink>
+                  </div>
+                )}
+              </div>
+            </section>
+          </div>
+        </aside>
+      </div>
 
       <div className={`social-layout${isChatRoute ? ' is-chat-route' : ''}${isProfileStyleRoute ? ' is-profile-route' : ''}`}>
         {!isChatRoute && !isProfileStyleRoute ? (
@@ -657,10 +875,9 @@ export default function AppShell() {
               </div>
 
               <nav className="feed-menu-list">
-                {FEED_SECTIONS.map((item) => {
-                  const canAccess = item.roles === 'all' || (Array.isArray(item.roles) && isModerator);
-                  return <SidebarItem key={item.key} item={item} canAccess={canAccess} />;
-                })}
+                {feedSectionItems.map((item) => (
+                  <SidebarItem key={item.key} item={item} canAccess={item.canAccess} />
+                ))}
               </nav>
             </section>
           </aside>

@@ -198,6 +198,12 @@ export default function ChatPage() {
   const [startConversationError, setStartConversationError] = useState('');
 
   const [socketConnected, setSocketConnected] = useState(false);
+  const [isMobileViewport, setIsMobileViewport] = useState(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return false;
+    }
+    return window.matchMedia('(max-width: 960px)').matches;
+  });
 
   const selectedConversation = useMemo(
     () => conversations.find((item) => item.conversationId === selectedConversationId) || null,
@@ -238,6 +244,7 @@ export default function ChatPage() {
     ? (selectedConversation.otherUserFullName || selectedConversation.otherUserEmail || selectedConversation.otherUserId)
     : '';
   const selectedConversationUserId = String(selectedConversation?.otherUserId || '').trim();
+  const isMobileThreadActive = isMobileViewport && Boolean(selectedConversation);
 
   function navigateToMessageProfile(event, targetUserId) {
     if (event) {
@@ -279,17 +286,42 @@ export default function ChatPage() {
 
       if (preferredConversationId) {
         setSelectedConversationId(preferredConversationId);
-      } else if (!selectedConversationRef.current && items.length > 0) {
-        setSelectedConversationId(items[0].conversationId);
+      } else if (!selectedConversationRef.current) {
+        if (!isMobileViewport && items.length > 0) {
+          setSelectedConversationId(items[0].conversationId);
+        } else if (items.length === 0) {
+          setSelectedConversationId('');
+        }
       } else if (selectedConversationRef.current && !items.some((item) => item.conversationId === selectedConversationRef.current)) {
-        setSelectedConversationId(items[0]?.conversationId || '');
+        setSelectedConversationId(isMobileViewport ? '' : (items[0]?.conversationId || ''));
       }
     } catch (error) {
       setConversationsError(error.message || 'Could not load conversations');
     } finally {
       setLoadingConversations(false);
     }
-  }, [token]);
+  }, [isMobileViewport, token]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined;
+
+    const mediaQuery = window.matchMedia('(max-width: 960px)');
+    const handleMediaChange = (event) => {
+      setIsMobileViewport(event.matches);
+    };
+
+    setIsMobileViewport(mediaQuery.matches);
+    mediaQuery.addEventListener('change', handleMediaChange);
+
+    return () => {
+      mediaQuery.removeEventListener('change', handleMediaChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isMobileViewport || selectedConversationId || conversations.length === 0) return;
+    setSelectedConversationId(conversations[0].conversationId);
+  }, [conversations, isMobileViewport, selectedConversationId]);
 
   const loadMessages = useCallback(async ({ conversationId, cursor = null, mode = 'replace' }) => {
     if (!token || !conversationId) return;
@@ -555,7 +587,7 @@ export default function ChatPage() {
 
   return (
     <div className="chat-page">
-      <div className="chat-layout">
+      <div className={`chat-layout${isMobileThreadActive ? ' is-mobile-thread-active' : ''}`}>
         <aside className="chat-sidebar" aria-label="Conversations">
           <header className="chat-sidebar-top">
             <h2>Chats</h2>
@@ -682,6 +714,18 @@ export default function ChatPage() {
             <>
               <header className="chat-thread-header">
                 <div className="chat-thread-identity">
+                  {isMobileViewport ? (
+                    <button
+                      type="button"
+                      className="chat-icon-btn chat-mobile-back-btn"
+                      aria-label="Back to conversations"
+                      onClick={() => setSelectedConversationId('')}
+                    >
+                      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                        <path d="M14.7 5.3L8 12l6.7 6.7l1.4-1.4L10.8 12l5.3-5.3z" />
+                      </svg>
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     className="chat-thread-avatar chat-profile-trigger"
