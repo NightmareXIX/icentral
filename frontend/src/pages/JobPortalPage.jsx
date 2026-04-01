@@ -2,6 +2,7 @@ import { startTransition, useDeferredValue, useEffect, useMemo, useState } from 
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
 import PostActionsMenu from '../components/posts/PostActionsMenu';
+import PostEditModal from '../components/posts/PostEditModal';
 import { getJobDetailsFromPost } from '../utils/jobPortalStorage';
 import { getPostLabel, isFacultyUser } from '../utils/postManagement';
 import { openUserProfile } from '../utils/profileNavigation';
@@ -111,6 +112,7 @@ export default function JobPortalPage() {
   const [commentsSubmittingPostId, setCommentsSubmittingPostId] = useState(null);
   const [commentDrafts, setCommentDrafts] = useState({});
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [editingPost, setEditingPost] = useState(null);
 
   const deferredSearch = useDeferredValue(searchInput);
   const activeSearch = deferredSearch.trim().toLowerCase();
@@ -303,6 +305,15 @@ export default function JobPortalPage() {
       if (item.id !== postId) return item;
       return { ...item, ...patch };
     }));
+  }
+
+  function handleEditedPostSaved(updatedPost) {
+    if (!updatedPost?.id) return;
+    setFeedItems((prev) => prev.map((item) => (
+      item.id === updatedPost.id
+        ? { ...item, ...updatedPost }
+        : item
+    )));
   }
 
   function isPostOwner(post) {
@@ -906,6 +917,13 @@ export default function JobPortalPage() {
                               ),
                             },
                             {
+                              key: 'edit',
+                              label: 'Edit',
+                              hidden: !isOwner,
+                              disabled: actionBusyPostId === item.id,
+                              onSelect: () => setEditingPost(item),
+                            },
+                            {
                               key: 'archive',
                               label: 'Archive',
                               disabled: actionBusyPostId === item.id || !isAuthenticated || item.status === 'archived',
@@ -1086,6 +1104,14 @@ export default function JobPortalPage() {
           </div>
         )}
       </section>
+
+      <PostEditModal
+        open={Boolean(editingPost)}
+        post={editingPost}
+        onClose={() => setEditingPost(null)}
+        onSaved={handleEditedPostSaved}
+        onFeedback={setBanner}
+      />
     </div>
   );
 }

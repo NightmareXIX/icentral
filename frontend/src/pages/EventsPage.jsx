@@ -2,6 +2,7 @@ import { startTransition, useDeferredValue, useEffect, useMemo, useState } from 
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
 import PostActionsMenu from '../components/posts/PostActionsMenu';
+import PostEditModal from '../components/posts/PostEditModal';
 import { getPostAuthorDisplayName } from '../utils/postAuthor';
 import { getPostLabel, isFacultyUser } from '../utils/postManagement';
 import { openUserProfile } from '../utils/profileNavigation';
@@ -167,6 +168,7 @@ export default function EventsPage() {
   const [commentsLoadingPostId, setCommentsLoadingPostId] = useState(null);
   const [commentsSubmittingPostId, setCommentsSubmittingPostId] = useState(null);
   const [commentDrafts, setCommentDrafts] = useState({});
+  const [editingPost, setEditingPost] = useState(null);
 
   const deferredSearch = useDeferredValue(searchInput);
   const activeSearch = deferredSearch.trim();
@@ -282,6 +284,15 @@ export default function EventsPage() {
 
   function updatePostEngagement(postId, patch) {
     setFeedItems((prev) => prev.map((item) => (item.id === postId ? { ...item, ...patch } : item)));
+  }
+
+  function handleEditedPostSaved(updatedPost) {
+    if (!updatedPost?.id) return;
+    setFeedItems((prev) => prev.map((item) => (
+      item.id === updatedPost.id
+        ? { ...item, ...updatedPost }
+        : item
+    )));
   }
 
   function shouldIgnoreCardNavigation(target) {
@@ -846,6 +857,14 @@ export default function EventsPage() {
         />
       )}
 
+      <PostEditModal
+        open={Boolean(editingPost)}
+        post={editingPost}
+        onClose={() => setEditingPost(null)}
+        onSaved={handleEditedPostSaved}
+        onFeedback={setBanner}
+      />
+
       <section className="panel feed-panel collab-feed-panel">
         <div className="panel-header feed-header">
           <div>
@@ -971,6 +990,13 @@ export default function EventsPage() {
                               hidden: !canPinPosts,
                               disabled: actionBusyPostId === item.id || !isAuthenticated,
                               onSelect: () => handleTogglePinned(item),
+                            },
+                            {
+                              key: 'edit',
+                              label: 'Edit',
+                              hidden: !isOwner,
+                              disabled: actionBusyPostId === item.id,
+                              onSelect: () => setEditingPost(item),
                             },
                             {
                               key: 'archive',

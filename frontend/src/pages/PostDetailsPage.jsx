@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
 import PostActionsMenu from '../components/posts/PostActionsMenu';
+import PostEditModal from '../components/posts/PostEditModal';
 import { getJobDetailsFromPost } from '../utils/jobPortalStorage';
 import {
   archivePostById,
@@ -175,6 +176,7 @@ export default function PostDetailsPage() {
   const [volunteerModalOpen, setVolunteerModalOpen] = useState(false);
   const [volunteers, setVolunteers] = useState([]);
   const [loadingVolunteers, setLoadingVolunteers] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
 
   const normalizedRole = String(user?.role || '').toLowerCase();
   const isJobPost = String(post?.type || '').toUpperCase() === 'JOB';
@@ -577,6 +579,17 @@ export default function PostDetailsPage() {
         />
       )}
 
+      <PostEditModal
+        open={editOpen}
+        post={post}
+        onClose={() => setEditOpen(false)}
+        onSaved={(updatedPost) => {
+          if (!updatedPost?.id) return;
+          setPost(updatedPost);
+        }}
+        onFeedback={setBanner}
+      />
+
       <section className={`panel post-details-panel${isEventPost ? ' is-event-post' : ''}`}>
         <div className="post-details-top-row">
           <button className="post-back-btn" type="button" onClick={() => navigate(-1)}>
@@ -638,6 +651,13 @@ export default function PostDetailsPage() {
                         hidden: !canPinPosts,
                         disabled: actionBusy,
                         onSelect: handleTogglePinned,
+                      },
+                      {
+                        key: 'edit',
+                        label: 'Edit',
+                        hidden: !isOwner,
+                        disabled: actionBusy,
+                        onSelect: () => setEditOpen(true),
                       },
                       {
                         key: 'archive',

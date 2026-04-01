@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/useAuth';
+import PostEditModal from './PostEditModal';
 import PostActionsMenu from './PostActionsMenu';
 import { getPostAuthorDisplayName } from '../../utils/postAuthor';
 import {
@@ -8,6 +9,7 @@ import {
   canManagePost,
   deletePostById,
   getPostLabel,
+  isPostOwner,
   isFacultyUser,
   isPostArchived,
   setPostPinned,
@@ -57,8 +59,10 @@ export default function PostResultCard({
   const navigate = useNavigate();
   const { isAuthenticated, isModerator, user } = useAuth();
   const [busyAction, setBusyAction] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const currentUserId = String(user?.id || '').trim();
   const canManage = canManagePost(post, user, isModerator);
+  const isOwner = isPostOwner(post, user);
   const canPin = isFacultyUser(user);
   const archived = isPostArchived(post);
 
@@ -195,6 +199,13 @@ export default function PostResultCard({
                   onSelect: handleTogglePinned,
                 },
                 {
+                  key: 'edit',
+                  label: 'Edit',
+                  hidden: !isOwner,
+                  disabled: busyAction,
+                  onSelect: () => setEditOpen(true),
+                },
+                {
                   key: 'archive',
                   label: 'Archive',
                   disabled: busyAction || archived,
@@ -242,6 +253,17 @@ export default function PostResultCard({
           <span className="pill" title={authorLabel}>{authorLabel}</span>
         )}
       </div>
+
+      <PostEditModal
+        open={editOpen}
+        post={post}
+        onClose={() => setEditOpen(false)}
+        onSaved={async (updatedPost) => {
+          if (!updatedPost?.id) return;
+          await onPostUpdated?.(post.id, updatedPost);
+        }}
+        onFeedback={onActionFeedback}
+      />
     </article>
   );
 }

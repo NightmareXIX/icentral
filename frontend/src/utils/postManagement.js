@@ -51,6 +51,19 @@ export function getPostLabel(post, fallback = 'post') {
   return `${toTitleCase(type)} post`;
 }
 
+export function getPostImageRef(post) {
+  if (!Array.isArray(post?.refs)) return null;
+  return post.refs.find((ref) => (
+    String(ref?.service || '').trim().toLowerCase() === 'image-upload'
+    && typeof ref?.metadata?.imageDataUrl === 'string'
+    && ref.metadata.imageDataUrl.trim()
+  )) || null;
+}
+
+export function getPostImageUrl(post) {
+  return getPostImageRef(post)?.metadata?.imageDataUrl?.trim() || '';
+}
+
 export async function archivePostById(postId) {
   const result = await apiRequest(`/posts/posts/${encodeURIComponent(postId)}`, {
     method: 'PATCH',
@@ -70,6 +83,14 @@ export async function setPostPinned(postId, pinned) {
 export async function deletePostById(postId) {
   const result = await apiRequest(`/posts/posts/${encodeURIComponent(postId)}`, {
     method: 'DELETE',
+  });
+  return result?.data || null;
+}
+
+export async function updatePostById(postId, payload) {
+  const result = await apiRequest(`/posts/posts/${encodeURIComponent(postId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
   });
   return result?.data || null;
 }

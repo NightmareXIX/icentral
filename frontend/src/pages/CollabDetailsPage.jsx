@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
 import PostActionsMenu from '../components/posts/PostActionsMenu';
+import CollabPostEditModal from '../components/posts/CollabPostEditModal';
 import { openUserProfile } from '../utils/profileNavigation';
 import {
   COLLAB_STATUSES,
@@ -65,6 +66,7 @@ export default function CollabDetailsPage() {
   const [joinMessage, setJoinMessage] = useState('');
   const [busyAction, setBusyAction] = useState(false);
   const [busyRequestId, setBusyRequestId] = useState('');
+  const [editOpen, setEditOpen] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -352,6 +354,13 @@ export default function CollabDetailsPage() {
                         onSelect: handleTogglePinned,
                       },
                       {
+                        key: 'edit',
+                        label: 'Edit',
+                        hidden: !isOwner,
+                        disabled: busyAction,
+                        onSelect: () => setEditOpen(true),
+                      },
+                      {
                         key: 'archive',
                         label: 'Archive',
                         disabled: busyAction || isArchived,
@@ -574,6 +583,17 @@ export default function CollabDetailsPage() {
           </>
         )}
       </section>
+
+      <CollabPostEditModal
+        open={editOpen}
+        post={post}
+        onClose={() => setEditOpen(false)}
+        onSaved={(updatedPost) => {
+          if (!updatedPost?.id) return;
+          setPost(updatedPost);
+        }}
+        onFeedback={setBanner}
+      />
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/useAuth';
+import CollabPostEditModal from './CollabPostEditModal';
 import PostActionsMenu from './PostActionsMenu';
 import { openUserProfile } from '../../utils/profileNavigation';
 import {
@@ -59,6 +60,7 @@ export default function CollabPostCard({
   const navigate = useNavigate();
   const { user, isAuthenticated, isModerator } = useAuth();
   const [busyAction, setBusyAction] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const currentUserId = String(user?.id || '').trim();
 
   const creatorId = String(post?.creator?.id || '').trim();
@@ -211,6 +213,13 @@ export default function CollabPostCard({
                   onSelect: handleTogglePinned,
                 },
                 {
+                  key: 'edit',
+                  label: 'Edit',
+                  hidden: !isOwner,
+                  disabled: busyAction,
+                  onSelect: () => setEditOpen(true),
+                },
+                {
                   key: 'archive',
                   label: 'Archive',
                   disabled: busyAction || isArchived,
@@ -290,6 +299,17 @@ export default function CollabPostCard({
           </span>
         ) : null}
       </div>
+
+      <CollabPostEditModal
+        open={editOpen}
+        post={post}
+        onClose={() => setEditOpen(false)}
+        onSaved={async (updatedPost) => {
+          if (!updatedPost?.id) return;
+          await onPostUpdated?.(post.id, updatedPost);
+        }}
+        onFeedback={onActionFeedback}
+      />
     </article>
   );
 }
