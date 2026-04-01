@@ -450,6 +450,14 @@ export default function DashboardPage() {
 
   const pageReady = !loadingProfile && !loadingPosts;
 
+  function handlePostUpdated(postId, patch) {
+    setPosts((prev) => prev.map((item) => (item.id === postId ? { ...item, ...patch } : item)));
+  }
+
+  function handlePostDeleted(postId) {
+    setPosts((prev) => prev.filter((item) => item.id !== postId));
+  }
+
   return (
     <div className="dashboard-page profile-page-shell">
       {banner.message && (
@@ -735,7 +743,14 @@ export default function DashboardPage() {
             ) : (
               <div className="feed-grid profile-post-grid">
                 {posts.map((item, index) => (
-                  <PostResultCard key={item.id || `dashboard-post-${index}`} post={item} index={index} />
+                  <PostResultCard
+                    key={item.id || `dashboard-post-${index}`}
+                    post={item}
+                    index={index}
+                    onPostUpdated={handlePostUpdated}
+                    onPostDeleted={handlePostDeleted}
+                    onActionFeedback={setBanner}
+                  />
                 ))}
               </div>
             )}

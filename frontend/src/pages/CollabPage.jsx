@@ -221,6 +221,16 @@ export default function CollabPage() {
     await loadPosts({ withLoading: true });
   }
 
+  async function handleManagedPostUpdated(postId, patch) {
+    setPosts((prev) => prev.map((item) => (item.id === postId ? { ...item, ...patch } : item)));
+    await loadPosts({ withLoading: false });
+  }
+
+  async function handleManagedPostDeleted(postId) {
+    setPosts((prev) => prev.filter((item) => item.id !== postId));
+    await loadPosts({ withLoading: false });
+  }
+
   function validateForm() {
     const nextErrors = {};
     const skills = parseCsvValues(formState.requiredSkills);
@@ -697,7 +707,14 @@ export default function CollabPage() {
         ) : (
           <div className="feed-grid collab-feed-grid">
             {filteredPosts.map((post, index) => (
-              <CollabPostCard key={post.id} post={post} index={index} />
+              <CollabPostCard
+                key={post.id}
+                post={post}
+                index={index}
+                onPostUpdated={handleManagedPostUpdated}
+                onPostDeleted={handleManagedPostDeleted}
+                onActionFeedback={setBanner}
+              />
             ))}
           </div>
         )}

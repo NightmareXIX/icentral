@@ -1,7 +1,9 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
+import PostActionsMenu from '../components/posts/PostActionsMenu';
 import { getPostAuthorDisplayName } from '../utils/postAuthor';
+import { getPostLabel } from '../utils/postManagement';
 import { openUserProfile } from '../utils/profileNavigation';
 import { apiRequest } from '../utils/profileApi';
 import EventMetadataBlock from '../components/posts/EventMetadataBlock';
@@ -141,7 +143,7 @@ function buildFeedParams({ type, filters, search }) {
 
 export default function EventsPage() {
   const navigate = useNavigate();
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated, isModerator, user } = useAuth();
   const currentUserId = String(user?.id || '').trim();
 
   const [feedItems, setFeedItems] = useState([]);
@@ -299,6 +301,11 @@ export default function EventsPage() {
     openUserProfile(navigate, targetUserId, currentUserId);
   }
 
+  function isPostOwner(post) {
+    if (!post?.authorId || !user?.id) return false;
+    return String(post.authorId) === String(user.id);
+  }
+
   async function loadComments(postId, options = {}) {
     const { openAfterLoad = true } = options;
     setCommentsLoadingPostId(postId);
@@ -429,6 +436,57 @@ export default function EventsPage() {
       setBanner({ type: 'error', message: `Could not share post: ${error.message}` });
     } finally {
       setSharingPostId(null);
+    }
+  }
+
+  async function handleArchivePost(post) {
+    if (!post?.id) return;
+    if (!isAuthenticated) {
+      setBanner({ type: 'error', message: 'Sign in to update posts.' });
+      return;
+    }
+
+    setActionBusyPostId(post.id);
+    try {
+      await apiRequest(`/posts/posts/${post.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ archive: true }),
+      });
+      updatePostEngagement(post.id, { status: 'archived' });
+      setBanner({ type: 'success', message: 'Event post archived.' });
+    } catch (error) {
+      setBanner({ type: 'error', message: `Post update failed: ${error.message}` });
+    } finally {
+      setActionBusyPostId(null);
+    }
+  }
+
+  async function handleDeletePost(post) {
+    if (!post?.id) return;
+    if (!isAuthenticated) {
+      setBanner({ type: 'error', message: 'Sign in to delete posts.' });
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete "${getPostLabel(post)}" permanently?`);
+    if (!confirmed) return;
+
+    setActionBusyPostId(post.id);
+    try {
+      await apiRequest(`/posts/posts/${post.id}`, { method: 'DELETE' });
+      setFeedItems((prev) => prev.filter((item) => item.id !== post.id));
+      setCommentsByPostId((prev) => {
+        if (!Object.prototype.hasOwnProperty.call(prev, post.id)) return prev;
+        const next = { ...prev };
+        delete next[post.id];
+        return next;
+      });
+      if (openCommentsPostId === post.id) setOpenCommentsPostId(null);
+      setBanner({ type: 'success', message: 'Event post deleted.' });
+    } catch (error) {
+      setBanner({ type: 'error', message: `Post delete failed: ${error.message}` });
+    } finally {
+      setActionBusyPostId(null);
     }
   }
 
@@ -835,7 +893,7 @@ export default function EventsPage() {
             {feedItems.map((item, index) => {
               const authorLabel = getPostAuthorDisplayName(item, 'Community member');
               const authorId = item?.author?.id || item?.authorId || null;
-              const isOwner = String(item?.authorId || '') === currentUserId;
+              const isOwner = isPostOwner(item);
               const canVolunteer = isVolunteerEligibleEvent(item) && !isOwner;
               const alreadyEnrolled = Boolean(item?.viewerHasVolunteerEnrollment);
               const eventEnded = isEventOver(item);
@@ -868,8 +926,32 @@ export default function EventsPage() {
                         <small>{formatDate(item.createdAt)}</small>
                       </div>
                     </div>
-                    <div className="pill-row">
-                      <span className={`pill tone-${statusTone(item.status)}`}>{item.status || 'unknown'}</span>
+                    <div className="post-card-header-tools">
+                      <div className="pill-row">
+                        <span className={`pill tone-${statusTone(item.status)}`}>{item.status || 'unknown'}</span>
+                      </div>
+
+                      {(isModerator || isOwner) && (
+                        <PostActionsMenu
+                          buttonLabel={`Open actions for ${getPostLabel(item)}`}
+                          menuLabel={`Post actions for ${getPostLabel(item)}`}
+                          actions={[
+                            {
+                              key: 'archive',
+                              label: 'Archive',
+                              disabled: actionBusyPostId === item.id || !isAuthenticated || item.status === 'archived',
+                              onSelect: () => handleArchivePost(item),
+                            },
+                            {
+                              key: 'delete',
+                              label: 'Delete',
+                              tone: 'danger',
+                              disabled: actionBusyPostId === item.id || !isAuthenticated,
+                              onSelect: () => handleDeletePost(item),
+                            },
+                          ]}
+                        />
+                      )}
                     </div>
                   </div>
 

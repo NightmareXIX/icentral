@@ -1,7 +1,9 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
+import PostActionsMenu from '../components/posts/PostActionsMenu';
 import { getJobDetailsFromPost } from '../utils/jobPortalStorage';
+import { getPostLabel } from '../utils/postManagement';
 import { openUserProfile } from '../utils/profileNavigation';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
@@ -880,7 +882,33 @@ export default function JobPortalPage() {
                       <h4>{details.jobTitle}</h4>
                       <p>{details.companyName}</p>
                     </div>
-                    <span className="pill">{formatDate(item.createdAt)}</span>
+                    <div className="post-card-header-tools">
+                      <div className="pill-row">
+                        <span className="pill">{formatDate(item.createdAt)}</span>
+                      </div>
+
+                      {(isFacultyOrAdmin || isOwner) && (
+                        <PostActionsMenu
+                          buttonLabel={`Open actions for ${getPostLabel(item)}`}
+                          menuLabel={`Post actions for ${getPostLabel(item)}`}
+                          actions={[
+                            {
+                              key: 'archive',
+                              label: 'Archive',
+                              disabled: actionBusyPostId === item.id || !isAuthenticated || item.status === 'archived',
+                              onSelect: () => patchPost(item.id, { archive: true }, 'Job post archived.'),
+                            },
+                            {
+                              key: 'delete',
+                              label: 'Delete',
+                              tone: 'danger',
+                              disabled: actionBusyPostId === item.id || !isAuthenticated,
+                              onSelect: () => deletePost(item),
+                            },
+                          ]}
+                        />
+                      )}
+                    </div>
                   </header>
 
                   <div className="job-card-meta-row">
@@ -938,27 +966,6 @@ export default function JobPortalPage() {
                       <span className="sr-only">Comments</span>
                     </button>
 
-                    {(isFacultyOrAdmin || isOwner) && (
-                      <button
-                        className="reddit-action-btn archive-action"
-                        type="button"
-                        disabled={actionBusyPostId === item.id || !isAuthenticated || item.status === 'archived'}
-                        onClick={() => patchPost(item.id, { archive: true }, 'Job post archived.')}
-                      >
-                        Archive
-                      </button>
-                    )}
-
-                    {(isFacultyOrAdmin || isOwner) && (
-                      <button
-                        className="reddit-action-btn delete-action"
-                        type="button"
-                        disabled={actionBusyPostId === item.id || !isAuthenticated}
-                        onClick={() => deletePost(item)}
-                      >
-                        Delete
-                      </button>
-                    )}
                   </div>
 
                   {openCommentsPostId === item.id && (

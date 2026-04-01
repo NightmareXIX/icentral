@@ -1991,6 +1991,138 @@
   justify-content: flex-end;
 }
 
+.post-card-header-tools {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+}
+
+.post-card-header-tools .pill-row {
+  justify-content: flex-end;
+}
+
+.post-actions-menu {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.post-actions-trigger {
+  position: relative;
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  color: rgba(220, 236, 245, 0.86);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: color 180ms ease, transform 180ms ease;
+}
+
+.post-actions-trigger::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: rgba(255, 255, 255, 0);
+  transform: scale(0.72);
+  transition: background 180ms ease, transform 180ms ease, box-shadow 180ms ease;
+}
+
+.post-actions-trigger:hover:not(:disabled),
+.post-actions-trigger:focus-visible {
+  color: #f2f8fb;
+  outline: none;
+}
+
+.post-actions-menu.is-open .post-actions-trigger {
+  color: #f2f8fb;
+}
+
+.post-actions-trigger:hover:not(:disabled)::before,
+.post-actions-trigger:focus-visible::before,
+.post-actions-menu.is-open .post-actions-trigger::before {
+  background: rgba(255, 255, 255, 0.1);
+  transform: scale(1);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+
+.post-actions-trigger:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.post-actions-trigger svg {
+  position: relative;
+  z-index: 1;
+  width: 15px;
+  height: 15px;
+  fill: currentColor;
+}
+
+.post-actions-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 18;
+  min-width: 160px;
+  padding: 8px;
+  border-radius: 14px;
+  border: 1px solid rgba(176, 226, 255, 0.18);
+  background:
+    linear-gradient(180deg, rgba(15, 31, 42, 0.98), rgba(8, 20, 29, 0.98));
+  box-shadow: 0 22px 40px rgba(0, 0, 0, 0.34);
+  display: grid;
+  gap: 4px;
+}
+
+.post-actions-item {
+  width: 100%;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #dcecf5;
+  border-radius: 10px;
+  padding: 10px 12px;
+  text-align: left;
+  cursor: pointer;
+  display: grid;
+  gap: 2px;
+  font: inherit;
+}
+
+.post-actions-item:hover:not(:disabled),
+.post-actions-item:focus-visible {
+  border-color: rgba(176, 226, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+  outline: none;
+}
+
+.post-actions-item small {
+  color: #8fb3c6;
+  font-size: 0.74rem;
+}
+
+.post-actions-item.is-danger {
+  color: #ffd6d6;
+}
+
+.post-actions-item.is-danger:hover:not(:disabled),
+.post-actions-item.is-danger:focus-visible {
+  border-color: rgba(255, 122, 122, 0.2);
+  background: rgba(96, 18, 24, 0.42);
+}
+
+.post-actions-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .feed-summary {
   margin: 0;
   color: #c8dde8;
@@ -2833,6 +2965,10 @@
   justify-content: space-between;
   gap: 10px;
   align-items: start;
+}
+
+.job-card-head .post-card-header-tools {
+  align-items: center;
 }
 
 .job-card-title-wrap h4 {
@@ -5432,8 +5568,22 @@
     flex-direction: column;
   }
 
+  .post-card-header-tools {
+    width: 100%;
+    justify-content: space-between;
+  }
+
   .pill-row {
     justify-content: flex-start;
+  }
+
+  .post-card-header-tools .pill-row {
+    justify-content: flex-start;
+  }
+
+  .job-card-head {
+    flex-direction: column;
+    align-items: flex-start;
   }
 
   .notification-card-head {

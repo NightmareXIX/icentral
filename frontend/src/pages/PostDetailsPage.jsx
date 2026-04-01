@@ -1,7 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
+import PostActionsMenu from '../components/posts/PostActionsMenu';
 import { getJobDetailsFromPost } from '../utils/jobPortalStorage';
+import {
+  archivePostById,
+  canManagePost,
+  deletePostById,
+  getPostLabel,
+  isPostArchived,
+} from '../utils/postManagement';
 import { openUserProfile } from '../utils/profileNavigation';
 import EventMetadataBlock from '../components/posts/EventMetadataBlock';
 import VolunteerEnrollmentModal from '../components/posts/VolunteerEnrollmentModal';
@@ -149,7 +157,7 @@ function getCommentAuthorLabel(comment, currentUser = null) {
 export default function PostDetailsPage() {
   const { postId } = useParams();
   const navigate = useNavigate();
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated, isModerator, user } = useAuth();
   const currentUserId = String(user?.id || '').trim();
 
   const [post, setPost] = useState(null);
@@ -173,6 +181,8 @@ export default function PostDetailsPage() {
   const isVolunteerEvent = isVolunteerEligibleEvent(post);
   const jobDetails = isJobPost ? getJobDetailsFromPost(post) : null;
   const isOwner = post?.authorId && user?.id && String(post.authorId) === String(user.id);
+  const canManageCurrentPost = canManagePost(post, user, isModerator);
+  const isArchived = isPostArchived(post);
   const canViewApplications = isJobPost && isOwner && normalizedRole === 'alumni';
 
   const imageRef = useMemo(() => {
@@ -403,6 +413,53 @@ export default function PostDetailsPage() {
     }
   }
 
+  function getReturnPathForPost(activePost) {
+    const type = String(activePost?.type || '').toUpperCase();
+    if (type === 'JOB') return '/job-portal';
+    if (type === 'EVENT' || type === 'EVENT_RECAP') return '/events';
+    if (type === 'COLLAB') return '/collaborate';
+    return '/home';
+  }
+
+  async function handleArchivePost() {
+    if (!post?.id) return;
+    if (!isAuthenticated) {
+      setBanner({ type: 'error', message: 'Sign in to update posts.' });
+      return;
+    }
+
+    setActionBusy(true);
+    try {
+      await archivePostById(post.id);
+      setPost((prev) => (prev ? { ...prev, status: 'archived' } : prev));
+      setBanner({ type: 'success', message: 'Post archived.' });
+    } catch (error) {
+      setBanner({ type: 'error', message: `Post update failed: ${error.message}` });
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  async function handleDeletePost() {
+    if (!post?.id) return;
+    if (!isAuthenticated) {
+      setBanner({ type: 'error', message: 'Sign in to delete posts.' });
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete "${getPostLabel(post)}" permanently?`);
+    if (!confirmed) return;
+
+    setActionBusy(true);
+    try {
+      await deletePostById(post.id);
+      navigate(getReturnPathForPost(post), { replace: true });
+    } catch (error) {
+      setBanner({ type: 'error', message: `Post delete failed: ${error.message}` });
+      setActionBusy(false);
+    }
+  }
+
   function openVolunteerEnrollment() {
     if (!isAuthenticated) {
       setBanner({ type: 'error', message: 'Sign in to enroll as a volunteer.' });
@@ -535,9 +592,35 @@ export default function PostDetailsPage() {
                   <small>{formatDate(post?.createdAt)}</small>
                 </div>
               </div>
-              {post?.status && (
-                <span className="pill">{toTitleCase(post.status)}</span>
-              )}
+              <div className="post-card-header-tools">
+                <div className="pill-row">
+                  {post?.status && (
+                    <span className="pill">{toTitleCase(post.status)}</span>
+                  )}
+                </div>
+
+                {canManageCurrentPost && (
+                  <PostActionsMenu
+                    buttonLabel={`Open actions for ${getPostLabel(post)}`}
+                    menuLabel={`Post actions for ${getPostLabel(post)}`}
+                    actions={[
+                      {
+                        key: 'archive',
+                        label: 'Archive',
+                        disabled: actionBusy || isArchived,
+                        onSelect: handleArchivePost,
+                      },
+                      {
+                        key: 'delete',
+                        label: 'Delete',
+                        tone: 'danger',
+                        disabled: actionBusy,
+                        onSelect: handleDeletePost,
+                      },
+                    ]}
+                  />
+                )}
+              </div>
             </header>
 
             <h2 className="post-details-title">{postTitle}</h2>

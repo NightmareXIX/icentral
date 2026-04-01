@@ -1,8 +1,10 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
+import PostActionsMenu from '../components/posts/PostActionsMenu';
 import { getPostAuthorDisplayName } from '../utils/postAuthor';
 import { openUserProfile } from '../utils/profileNavigation';
+import { getPostLabel } from '../utils/postManagement';
 import { getPostTypeIconKey, getPostTypeIconPaths } from '../utils/postTypeIcon';
 import EventMetadataBlock from '../components/posts/EventMetadataBlock';
 import VolunteerEnrollmentModal from '../components/posts/VolunteerEnrollmentModal';
@@ -1103,9 +1105,33 @@ export default function HomeFeedPage() {
                       </div>
                     </div>
 
-                    <div className="pill-row">
-                      <span className={`pill tone-${statusTone(item.status)}`}>{item.status || 'unknown'}</span>
-                      {item.pinned && <span className="pill tone-pin">Pinned</span>}
+                    <div className="post-card-header-tools">
+                      <div className="pill-row">
+                        <span className={`pill tone-${statusTone(item.status)}`}>{item.status || 'unknown'}</span>
+                        {item.pinned && <span className="pill tone-pin">Pinned</span>}
+                      </div>
+
+                      {(isModerator || isPostOwner(item)) && (
+                        <PostActionsMenu
+                          buttonLabel={`Open actions for ${getPostLabel(item)}`}
+                          menuLabel={`Post actions for ${getPostLabel(item)}`}
+                          actions={[
+                            {
+                              key: 'archive',
+                              label: 'Archive',
+                              disabled: actionBusyPostId === item.id || !isAuthenticated || item.status === 'archived',
+                              onSelect: () => patchPost(item.id, { archive: true }, 'Post archived.'),
+                            },
+                            {
+                              key: 'delete',
+                              label: 'Delete',
+                              tone: 'danger',
+                              disabled: actionBusyPostId === item.id || !isAuthenticated,
+                              onSelect: () => deletePost(item),
+                            },
+                          ]}
+                        />
+                      )}
                     </div>
                   </div>
 
@@ -1217,27 +1243,6 @@ export default function HomeFeedPage() {
                       </button>
                     )}
 
-                    {(isModerator || isPostOwner(item)) && (
-                      <button
-                        className="reddit-action-btn archive-action"
-                        type="button"
-                        disabled={actionBusyPostId === item.id || !isAuthenticated || item.status === 'archived'}
-                        onClick={() => patchPost(item.id, { archive: true }, 'Post archived.')}
-                      >
-                        Archive
-                      </button>
-                    )}
-
-                    {(isModerator || isPostOwner(item)) && (
-                      <button
-                        className="reddit-action-btn delete-action"
-                        type="button"
-                        disabled={actionBusyPostId === item.id || !isAuthenticated}
-                        onClick={() => deletePost(item)}
-                      >
-                        Delete
-                      </button>
-                    )}
                   </div>
 
                   {openCommentsPostId === item.id && (

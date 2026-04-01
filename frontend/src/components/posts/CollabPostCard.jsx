@@ -1,5 +1,7 @@
+import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/useAuth';
+import PostActionsMenu from './PostActionsMenu';
 import { openUserProfile } from '../../utils/profileNavigation';
 import {
   getCollabOpeningsLeft,
@@ -7,6 +9,13 @@ import {
   getCollabRequestForUser,
   REQUEST_STATUS,
 } from '../../utils/collabApi';
+import {
+  archivePostById,
+  canManagePost,
+  deletePostById,
+  getPostLabel,
+  isPostArchived,
+} from '../../utils/postManagement';
 
 const CARD_NAV_IGNORE_SELECTOR = 'a,button,input,textarea,select,label,[role="button"],[data-prevent-card-nav="true"]';
 
@@ -38,9 +47,16 @@ function stopPropagation(event) {
   event.stopPropagation();
 }
 
-export default function CollabPostCard({ post, index = 0 }) {
+export default function CollabPostCard({
+  post,
+  index = 0,
+  onPostUpdated,
+  onPostDeleted,
+  onActionFeedback,
+}) {
   const navigate = useNavigate();
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, isModerator } = useAuth();
+  const [busyAction, setBusyAction] = useState(false);
   const currentUserId = String(user?.id || '').trim();
 
   const creatorId = String(post?.creator?.id || '').trim();
@@ -52,8 +68,10 @@ export default function CollabPostCard({ post, index = 0 }) {
   const requestStatus = request ? normalizeRequestStatus(request.status) : null;
   const isOpen = String(post?.status || '').toUpperCase() === 'OPEN';
   const isOwner = creatorId && currentUserId && creatorId === currentUserId;
+  const isArchived = isPostArchived(post);
+  const canManage = canManagePost(post, user, isModerator);
   const showFacultyLedTag = creatorRole === 'Faculty' || creatorRole === 'Admin';
-  const canRequest = isAuthenticated && !isOwner && isOpen
+  const canRequest = isAuthenticated && !isOwner && isOpen && !isArchived
     && requestStatus !== REQUEST_STATUS.PENDING
     && requestStatus !== REQUEST_STATUS.ACCEPTED;
 
@@ -86,6 +104,47 @@ export default function CollabPostCard({ post, index = 0 }) {
     openUserProfile(navigate, creatorId, currentUserId);
   }
 
+  async function handleArchivePost() {
+    if (!post?.id) return;
+    if (!isAuthenticated) {
+      onActionFeedback?.({ type: 'error', message: 'Sign in to update posts.' });
+      return;
+    }
+
+    setBusyAction(true);
+    try {
+      await archivePostById(post.id);
+      await onPostUpdated?.(post.id, { postStatus: 'archived' });
+      onActionFeedback?.({ type: 'success', message: 'Collaboration post archived.' });
+    } catch (error) {
+      onActionFeedback?.({ type: 'error', message: `Post update failed: ${error.message}` });
+    } finally {
+      setBusyAction(false);
+    }
+  }
+
+  async function handleDeletePost() {
+    if (!post?.id) return;
+    if (!isAuthenticated) {
+      onActionFeedback?.({ type: 'error', message: 'Sign in to delete posts.' });
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete "${getPostLabel(post, 'collaboration')}" permanently?`);
+    if (!confirmed) return;
+
+    setBusyAction(true);
+    try {
+      await deletePostById(post.id);
+      await onPostDeleted?.(post.id);
+      onActionFeedback?.({ type: 'success', message: 'Collaboration post deleted.' });
+    } catch (error) {
+      onActionFeedback?.({ type: 'error', message: `Post delete failed: ${error.message}` });
+    } finally {
+      setBusyAction(false);
+    }
+  }
+
   return (
     <article
       className="feed-card social-post-card collab-post-card feed-card-linkable"
@@ -104,9 +163,34 @@ export default function CollabPostCard({ post, index = 0 }) {
           </div>
         </div>
 
-        <div className="pill-row">
-          <span className="pill collab-category-pill">{post?.category || 'Collaboration'}</span>
-          <span className={`pill ${isOpen ? 'tone-ok' : 'tone-muted'}`}>{isOpen ? 'OPEN' : 'CLOSED'}</span>
+        <div className="post-card-header-tools">
+          <div className="pill-row">
+            <span className="pill collab-category-pill">{post?.category || 'Collaboration'}</span>
+            <span className={`pill ${isOpen ? 'tone-ok' : 'tone-muted'}`}>{isOpen ? 'OPEN' : 'CLOSED'}</span>
+            {isArchived && <span className="pill tone-muted">Archived</span>}
+          </div>
+
+          {canManage && (
+            <PostActionsMenu
+              buttonLabel={`Open actions for ${getPostLabel(post, 'collaboration')}`}
+              menuLabel={`Post actions for ${getPostLabel(post, 'collaboration')}`}
+              actions={[
+                {
+                  key: 'archive',
+                  label: 'Archive',
+                  disabled: busyAction || isArchived,
+                  onSelect: handleArchivePost,
+                },
+                {
+                  key: 'delete',
+                  label: 'Delete',
+                  tone: 'danger',
+                  disabled: busyAction,
+                  onSelect: handleDeletePost,
+                },
+              ]}
+            />
+          )}
         </div>
       </div>
 
