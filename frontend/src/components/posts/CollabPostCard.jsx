@@ -14,7 +14,9 @@ import {
   canManagePost,
   deletePostById,
   getPostLabel,
+  isFacultyUser,
   isPostArchived,
+  setPostPinned,
 } from '../../utils/postManagement';
 
 const CARD_NAV_IGNORE_SELECTOR = 'a,button,input,textarea,select,label,[role="button"],[data-prevent-card-nav="true"]';
@@ -70,6 +72,7 @@ export default function CollabPostCard({
   const isOwner = creatorId && currentUserId && creatorId === currentUserId;
   const isArchived = isPostArchived(post);
   const canManage = canManagePost(post, user, isModerator);
+  const canPin = isFacultyUser(user);
   const showFacultyLedTag = creatorRole === 'Faculty' || creatorRole === 'Admin';
   const canRequest = isAuthenticated && !isOwner && isOpen && !isArchived
     && requestStatus !== REQUEST_STATUS.PENDING
@@ -145,6 +148,30 @@ export default function CollabPostCard({
     }
   }
 
+  async function handleTogglePinned() {
+    if (!post?.id) return;
+    if (!isAuthenticated) {
+      onActionFeedback?.({ type: 'error', message: 'Sign in to update posts.' });
+      return;
+    }
+    if (!canPin) {
+      onActionFeedback?.({ type: 'error', message: 'Only faculty accounts can pin posts.' });
+      return;
+    }
+
+    const nextPinned = !Boolean(post?.pinned);
+    setBusyAction(true);
+    try {
+      await setPostPinned(post.id, nextPinned);
+      await onPostUpdated?.(post.id, { pinned: nextPinned });
+      onActionFeedback?.({ type: 'success', message: nextPinned ? 'Collaboration post pinned.' : 'Collaboration post unpinned.' });
+    } catch (error) {
+      onActionFeedback?.({ type: 'error', message: `Post update failed: ${error.message}` });
+    } finally {
+      setBusyAction(false);
+    }
+  }
+
   return (
     <article
       className="feed-card social-post-card collab-post-card feed-card-linkable"
@@ -167,6 +194,7 @@ export default function CollabPostCard({
           <div className="pill-row">
             <span className="pill collab-category-pill">{post?.category || 'Collaboration'}</span>
             <span className={`pill ${isOpen ? 'tone-ok' : 'tone-muted'}`}>{isOpen ? 'OPEN' : 'CLOSED'}</span>
+            {post?.pinned && <span className="pill tone-pin">Pinned</span>}
             {isArchived && <span className="pill tone-muted">Archived</span>}
           </div>
 
@@ -175,6 +203,13 @@ export default function CollabPostCard({
               buttonLabel={`Open actions for ${getPostLabel(post, 'collaboration')}`}
               menuLabel={`Post actions for ${getPostLabel(post, 'collaboration')}`}
               actions={[
+                {
+                  key: 'pin',
+                  label: post?.pinned ? 'Unpin' : 'Pin',
+                  hidden: !canPin,
+                  disabled: busyAction,
+                  onSelect: handleTogglePinned,
+                },
                 {
                   key: 'archive',
                   label: 'Archive',

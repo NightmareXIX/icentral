@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
 import PostActionsMenu from '../components/posts/PostActionsMenu';
 import { getPostAuthorDisplayName } from '../utils/postAuthor';
-import { getPostLabel } from '../utils/postManagement';
+import { getPostLabel, isFacultyUser } from '../utils/postManagement';
 import { openUserProfile } from '../utils/profileNavigation';
 import { apiRequest } from '../utils/profileApi';
 import EventMetadataBlock from '../components/posts/EventMetadataBlock';
@@ -144,6 +144,7 @@ function buildFeedParams({ type, filters, search }) {
 export default function EventsPage() {
   const navigate = useNavigate();
   const { isAuthenticated, isModerator, user } = useAuth();
+  const canPinPosts = isFacultyUser(user);
   const currentUserId = String(user?.id || '').trim();
 
   const [feedItems, setFeedItems] = useState([]);
@@ -485,6 +486,33 @@ export default function EventsPage() {
       setBanner({ type: 'success', message: 'Event post deleted.' });
     } catch (error) {
       setBanner({ type: 'error', message: `Post delete failed: ${error.message}` });
+    } finally {
+      setActionBusyPostId(null);
+    }
+  }
+
+  async function handleTogglePinned(post) {
+    if (!post?.id) return;
+    if (!isAuthenticated) {
+      setBanner({ type: 'error', message: 'Sign in to update posts.' });
+      return;
+    }
+    if (!canPinPosts) {
+      setBanner({ type: 'error', message: 'Only faculty accounts can pin posts.' });
+      return;
+    }
+
+    const nextPinned = !Boolean(post?.pinned);
+    setActionBusyPostId(post.id);
+    try {
+      await apiRequest(`/posts/posts/${post.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ pinned: nextPinned }),
+      });
+      updatePostEngagement(post.id, { pinned: nextPinned });
+      setBanner({ type: 'success', message: nextPinned ? 'Event post pinned.' : 'Event post unpinned.' });
+    } catch (error) {
+      setBanner({ type: 'error', message: `Post update failed: ${error.message}` });
     } finally {
       setActionBusyPostId(null);
     }
@@ -929,6 +957,7 @@ export default function EventsPage() {
                     <div className="post-card-header-tools">
                       <div className="pill-row">
                         <span className={`pill tone-${statusTone(item.status)}`}>{item.status || 'unknown'}</span>
+                        {item.pinned && <span className="pill tone-pin">Pinned</span>}
                       </div>
 
                       {(isModerator || isOwner) && (
@@ -936,6 +965,13 @@ export default function EventsPage() {
                           buttonLabel={`Open actions for ${getPostLabel(item)}`}
                           menuLabel={`Post actions for ${getPostLabel(item)}`}
                           actions={[
+                            {
+                              key: 'pin',
+                              label: item.pinned ? 'Unpin' : 'Pin',
+                              hidden: !canPinPosts,
+                              disabled: actionBusyPostId === item.id || !isAuthenticated,
+                              onSelect: () => handleTogglePinned(item),
+                            },
                             {
                               key: 'archive',
                               label: 'Archive',

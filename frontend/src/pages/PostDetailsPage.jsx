@@ -8,7 +8,9 @@ import {
   canManagePost,
   deletePostById,
   getPostLabel,
+  isFacultyUser,
   isPostArchived,
+  setPostPinned,
 } from '../utils/postManagement';
 import { openUserProfile } from '../utils/profileNavigation';
 import EventMetadataBlock from '../components/posts/EventMetadataBlock';
@@ -182,6 +184,7 @@ export default function PostDetailsPage() {
   const jobDetails = isJobPost ? getJobDetailsFromPost(post) : null;
   const isOwner = post?.authorId && user?.id && String(post.authorId) === String(user.id);
   const canManageCurrentPost = canManagePost(post, user, isModerator);
+  const canPinPosts = isFacultyUser(user);
   const isArchived = isPostArchived(post);
   const canViewApplications = isJobPost && isOwner && normalizedRole === 'alumni';
 
@@ -460,6 +463,30 @@ export default function PostDetailsPage() {
     }
   }
 
+  async function handleTogglePinned() {
+    if (!post?.id) return;
+    if (!isAuthenticated) {
+      setBanner({ type: 'error', message: 'Sign in to update posts.' });
+      return;
+    }
+    if (!canPinPosts) {
+      setBanner({ type: 'error', message: 'Only faculty accounts can pin posts.' });
+      return;
+    }
+
+    const nextPinned = !Boolean(post?.pinned);
+    setActionBusy(true);
+    try {
+      await setPostPinned(post.id, nextPinned);
+      setPost((prev) => (prev ? { ...prev, pinned: nextPinned } : prev));
+      setBanner({ type: 'success', message: nextPinned ? 'Post pinned.' : 'Post unpinned.' });
+    } catch (error) {
+      setBanner({ type: 'error', message: `Post update failed: ${error.message}` });
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
   function openVolunteerEnrollment() {
     if (!isAuthenticated) {
       setBanner({ type: 'error', message: 'Sign in to enroll as a volunteer.' });
@@ -597,6 +624,7 @@ export default function PostDetailsPage() {
                   {post?.status && (
                     <span className="pill">{toTitleCase(post.status)}</span>
                   )}
+                  {post?.pinned && <span className="pill tone-pin">Pinned</span>}
                 </div>
 
                 {canManageCurrentPost && (
@@ -604,6 +632,13 @@ export default function PostDetailsPage() {
                     buttonLabel={`Open actions for ${getPostLabel(post)}`}
                     menuLabel={`Post actions for ${getPostLabel(post)}`}
                     actions={[
+                      {
+                        key: 'pin',
+                        label: post?.pinned ? 'Unpin' : 'Pin',
+                        hidden: !canPinPosts,
+                        disabled: actionBusy,
+                        onSelect: handleTogglePinned,
+                      },
                       {
                         key: 'archive',
                         label: 'Archive',

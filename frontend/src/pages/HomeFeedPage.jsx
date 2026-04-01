@@ -4,7 +4,7 @@ import { useAuth } from '../context/useAuth';
 import PostActionsMenu from '../components/posts/PostActionsMenu';
 import { getPostAuthorDisplayName } from '../utils/postAuthor';
 import { openUserProfile } from '../utils/profileNavigation';
-import { getPostLabel } from '../utils/postManagement';
+import { getPostLabel, isFacultyUser } from '../utils/postManagement';
 import { getPostTypeIconKey, getPostTypeIconPaths } from '../utils/postTypeIcon';
 import EventMetadataBlock from '../components/posts/EventMetadataBlock';
 import VolunteerEnrollmentModal from '../components/posts/VolunteerEnrollmentModal';
@@ -192,6 +192,7 @@ export default function HomeFeedPage() {
   const deferredSearch = useDeferredValue(searchInput);
   const activeSearch = deferredSearch.trim();
   const normalizedRole = String(user?.role || '').toLowerCase();
+  const canPinPosts = isFacultyUser(user);
   const currentUserId = String(user?.id || '').trim();
   const allowedComposerTypeOptions = useMemo(
     () => postTypeOptions.filter((option) => canRoleCreateType(normalizedRole, option.value)),
@@ -1116,6 +1117,17 @@ export default function HomeFeedPage() {
                           buttonLabel={`Open actions for ${getPostLabel(item)}`}
                           menuLabel={`Post actions for ${getPostLabel(item)}`}
                           actions={[
+                            {
+                              key: 'pin',
+                              label: item.pinned ? 'Unpin' : 'Pin',
+                              hidden: !canPinPosts,
+                              disabled: actionBusyPostId === item.id || !isAuthenticated,
+                              onSelect: () => patchPost(
+                                item.id,
+                                { pinned: !item.pinned },
+                                item.pinned ? 'Post unpinned.' : 'Post pinned.',
+                              ),
+                            },
                             {
                               key: 'archive',
                               label: 'Archive',

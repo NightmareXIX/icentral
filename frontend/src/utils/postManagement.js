@@ -26,6 +26,10 @@ export function canManagePost(post, user, isModerator = false) {
   return Boolean(isModerator || isPostOwner(post, user));
 }
 
+export function isFacultyUser(user) {
+  return String(user?.role || '').trim().toLowerCase() === 'faculty';
+}
+
 export function getPostManagementStatus(post) {
   const postStatus = String(post?.postStatus || post?.post_status || '').trim().toLowerCase();
   if (postStatus) return postStatus;
@@ -51,6 +55,14 @@ export async function archivePostById(postId) {
   const result = await apiRequest(`/posts/posts/${encodeURIComponent(postId)}`, {
     method: 'PATCH',
     body: JSON.stringify({ archive: true }),
+  });
+  return result?.data || null;
+}
+
+export async function setPostPinned(postId, pinned) {
+  const result = await apiRequest(`/posts/posts/${encodeURIComponent(postId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ pinned: Boolean(pinned) }),
   });
   return result?.data || null;
 }

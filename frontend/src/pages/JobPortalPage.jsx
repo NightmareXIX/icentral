@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
 import PostActionsMenu from '../components/posts/PostActionsMenu';
 import { getJobDetailsFromPost } from '../utils/jobPortalStorage';
-import { getPostLabel } from '../utils/postManagement';
+import { getPostLabel, isFacultyUser } from '../utils/postManagement';
 import { openUserProfile } from '../utils/profileNavigation';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
@@ -116,6 +116,7 @@ export default function JobPortalPage() {
   const activeSearch = deferredSearch.trim().toLowerCase();
   const currentUserId = String(user?.id || '').trim();
   const normalizedRole = String(user?.role || '').toLowerCase();
+  const canPinPosts = isFacultyUser(user);
   const isAlumni = normalizedRole === 'alumni';
   const isFacultyOrAdmin = normalizedRole === 'faculty' || normalizedRole === 'admin';
   const fallbackStatus = String(user?.alumniVerificationStatus || '').toLowerCase();
@@ -885,6 +886,7 @@ export default function JobPortalPage() {
                     <div className="post-card-header-tools">
                       <div className="pill-row">
                         <span className="pill">{formatDate(item.createdAt)}</span>
+                        {item.pinned && <span className="pill tone-pin">Pinned</span>}
                       </div>
 
                       {(isFacultyOrAdmin || isOwner) && (
@@ -892,6 +894,17 @@ export default function JobPortalPage() {
                           buttonLabel={`Open actions for ${getPostLabel(item)}`}
                           menuLabel={`Post actions for ${getPostLabel(item)}`}
                           actions={[
+                            {
+                              key: 'pin',
+                              label: item.pinned ? 'Unpin' : 'Pin',
+                              hidden: !canPinPosts,
+                              disabled: actionBusyPostId === item.id || !isAuthenticated,
+                              onSelect: () => patchPost(
+                                item.id,
+                                { pinned: !item.pinned },
+                                item.pinned ? 'Job post unpinned.' : 'Job post pinned.',
+                              ),
+                            },
                             {
                               key: 'archive',
                               label: 'Archive',

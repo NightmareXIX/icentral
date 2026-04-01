@@ -8,7 +8,9 @@ import {
   canManagePost,
   deletePostById,
   getPostLabel,
+  isFacultyUser,
   isPostArchived,
+  setPostPinned,
 } from '../../utils/postManagement';
 import { openUserProfile } from '../../utils/profileNavigation';
 
@@ -57,6 +59,7 @@ export default function PostResultCard({
   const [busyAction, setBusyAction] = useState(false);
   const currentUserId = String(user?.id || '').trim();
   const canManage = canManagePost(post, user, isModerator);
+  const canPin = isFacultyUser(user);
   const archived = isPostArchived(post);
 
   function openPost() {
@@ -128,6 +131,30 @@ export default function PostResultCard({
     }
   }
 
+  async function handleTogglePinned() {
+    if (!post?.id) return;
+    if (!isAuthenticated) {
+      onActionFeedback?.({ type: 'error', message: 'Sign in to update posts.' });
+      return;
+    }
+    if (!canPin) {
+      onActionFeedback?.({ type: 'error', message: 'Only faculty accounts can pin posts.' });
+      return;
+    }
+
+    const nextPinned = !Boolean(post?.pinned);
+    setBusyAction(true);
+    try {
+      await setPostPinned(post.id, nextPinned);
+      onPostUpdated?.(post.id, { pinned: nextPinned });
+      onActionFeedback?.({ type: 'success', message: nextPinned ? 'Post pinned.' : 'Post unpinned.' });
+    } catch (error) {
+      onActionFeedback?.({ type: 'error', message: `Post update failed: ${error.message}` });
+    } finally {
+      setBusyAction(false);
+    }
+  }
+
   return (
     <article
       className="feed-card social-post-card feed-card-linkable search-result-card"
@@ -160,6 +187,13 @@ export default function PostResultCard({
               buttonLabel={`Open actions for ${getPostLabel(post)}`}
               menuLabel={`Post actions for ${getPostLabel(post)}`}
               actions={[
+                {
+                  key: 'pin',
+                  label: post?.pinned ? 'Unpin' : 'Pin',
+                  hidden: !canPin,
+                  disabled: busyAction,
+                  onSelect: handleTogglePinned,
+                },
                 {
                   key: 'archive',
                   label: 'Archive',

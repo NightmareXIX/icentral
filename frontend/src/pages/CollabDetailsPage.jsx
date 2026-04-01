@@ -19,7 +19,9 @@ import {
   canManagePost,
   deletePostById,
   getPostLabel,
+  isFacultyUser,
   isPostArchived,
+  setPostPinned,
 } from '../utils/postManagement';
 
 function formatDate(value) {
@@ -114,6 +116,7 @@ export default function CollabDetailsPage() {
   const creatorRole = String(post?.creator?.role || 'Member');
   const isOwner = creatorId && currentUserId && creatorId === currentUserId;
   const canManageCurrentPost = canManagePost(post, user, isModerator);
+  const canPinPosts = isFacultyUser(user);
   const isArchived = isPostArchived(post);
   const currentUserRequest = getCollabRequestForUser(post, currentUserId);
   const currentUserRequestStatus = currentUserRequest
@@ -254,6 +257,30 @@ export default function CollabDetailsPage() {
     }
   }
 
+  async function handleTogglePinned() {
+    if (!post?.id) return;
+    if (!isAuthenticated) {
+      setBanner({ type: 'error', message: 'Sign in to update posts.' });
+      return;
+    }
+    if (!canPinPosts) {
+      setBanner({ type: 'error', message: 'Only faculty accounts can pin posts.' });
+      return;
+    }
+
+    const nextPinned = !Boolean(post?.pinned);
+    setBusyAction(true);
+    try {
+      await setPostPinned(post.id, nextPinned);
+      setPost((prev) => (prev ? { ...prev, pinned: nextPinned } : prev));
+      setBanner({ type: 'success', message: nextPinned ? 'Collaboration post pinned.' : 'Collaboration post unpinned.' });
+    } catch (error) {
+      setBanner({ type: 'error', message: `Post update failed: ${error.message}` });
+    } finally {
+      setBusyAction(false);
+    }
+  }
+
   return (
     <div className="home-feed-page collab-details-page">
       {banner.message && (
@@ -308,6 +335,7 @@ export default function CollabDetailsPage() {
                 <div className="pill-row">
                   <span className={`pill ${isOpen ? 'tone-ok' : 'tone-muted'}`}>{post?.status || 'OPEN'}</span>
                   <span className="pill">Pending requests: {pendingRequestCount}</span>
+                  {post?.pinned && <span className="pill tone-pin">Pinned</span>}
                   {isArchived && <span className="pill tone-muted">Archived</span>}
                 </div>
 
@@ -316,6 +344,13 @@ export default function CollabDetailsPage() {
                     buttonLabel={`Open actions for ${getPostLabel(post, 'collaboration')}`}
                     menuLabel={`Post actions for ${getPostLabel(post, 'collaboration')}`}
                     actions={[
+                      {
+                        key: 'pin',
+                        label: post?.pinned ? 'Unpin' : 'Pin',
+                        hidden: !canPinPosts,
+                        disabled: busyAction,
+                        onSelect: handleTogglePinned,
+                      },
                       {
                         key: 'archive',
                         label: 'Archive',
