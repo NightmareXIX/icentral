@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
+import PostActionsMenu from '../components/posts/PostActionsMenu';
+import CollabPostEditModal from '../components/posts/CollabPostEditModal';
 import { openUserProfile } from '../utils/profileNavigation';
 import {
   COLLAB_STATUSES,
@@ -13,6 +15,15 @@ import {
   setCollabPostStatus,
   submitCollabJoinRequest,
 } from '../utils/collabApi';
+import {
+  archivePostById,
+  canManagePost,
+  deletePostById,
+  getPostLabel,
+  isFacultyUser,
+  isPostArchived,
+  setPostPinned,
+} from '../utils/postManagement';
 
 function formatDate(value) {
   if (!value) return 'N/A';
@@ -45,7 +56,7 @@ export default function CollabDetailsPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const joinMessageInputRef = useRef(null);
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated, isModerator, user } = useAuth();
   const currentUserId = String(user?.id || '').trim();
 
   const [post, setPost] = useState(null);
@@ -55,6 +66,7 @@ export default function CollabDetailsPage() {
   const [joinMessage, setJoinMessage] = useState('');
   const [busyAction, setBusyAction] = useState(false);
   const [busyRequestId, setBusyRequestId] = useState('');
+  const [editOpen, setEditOpen] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -105,6 +117,9 @@ export default function CollabDetailsPage() {
   const creatorName = String(post?.creator?.name || 'Community member');
   const creatorRole = String(post?.creator?.role || 'Member');
   const isOwner = creatorId && currentUserId && creatorId === currentUserId;
+  const canManageCurrentPost = canManagePost(post, user, isModerator);
+  const canPinPosts = isFacultyUser(user);
+  const isArchived = isPostArchived(post);
   const currentUserRequest = getCollabRequestForUser(post, currentUserId);
   const currentUserRequestStatus = currentUserRequest
     ? normalizeRequestStatus(currentUserRequest.status)
@@ -123,6 +138,7 @@ export default function CollabDetailsPage() {
   const canSubmitRequest = isAuthenticated
     && !isOwner
     && isOpen
+    && !isArchived
     && currentUserRequestStatus !== REQUEST_STATUS.PENDING
     && currentUserRequestStatus !== REQUEST_STATUS.ACCEPTED;
 
@@ -204,6 +220,69 @@ export default function CollabDetailsPage() {
     }
   }
 
+  async function handleArchivePost() {
+    if (!post?.id) return;
+    if (!isAuthenticated) {
+      setBanner({ type: 'error', message: 'Sign in to update posts.' });
+      return;
+    }
+
+    setBusyAction(true);
+    try {
+      await archivePostById(post.id);
+      setPost((prev) => (prev ? { ...prev, postStatus: 'archived' } : prev));
+      setBanner({ type: 'success', message: 'Collaboration post archived.' });
+    } catch (error) {
+      setBanner({ type: 'error', message: `Post update failed: ${error.message}` });
+    } finally {
+      setBusyAction(false);
+    }
+  }
+
+  async function handleDeletePost() {
+    if (!post?.id) return;
+    if (!isAuthenticated) {
+      setBanner({ type: 'error', message: 'Sign in to delete posts.' });
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete "${getPostLabel(post, 'collaboration')}" permanently?`);
+    if (!confirmed) return;
+
+    setBusyAction(true);
+    try {
+      await deletePostById(post.id);
+      navigate('/collaborate', { replace: true });
+    } catch (error) {
+      setBanner({ type: 'error', message: `Post delete failed: ${error.message}` });
+      setBusyAction(false);
+    }
+  }
+
+  async function handleTogglePinned() {
+    if (!post?.id) return;
+    if (!isAuthenticated) {
+      setBanner({ type: 'error', message: 'Sign in to update posts.' });
+      return;
+    }
+    if (!canPinPosts) {
+      setBanner({ type: 'error', message: 'Only faculty accounts can pin posts.' });
+      return;
+    }
+
+    const nextPinned = !Boolean(post?.pinned);
+    setBusyAction(true);
+    try {
+      await setPostPinned(post.id, nextPinned);
+      setPost((prev) => (prev ? { ...prev, pinned: nextPinned } : prev));
+      setBanner({ type: 'success', message: nextPinned ? 'Collaboration post pinned.' : 'Collaboration post unpinned.' });
+    } catch (error) {
+      setBanner({ type: 'error', message: `Post update failed: ${error.message}` });
+    } finally {
+      setBusyAction(false);
+    }
+  }
+
   return (
     <div className="home-feed-page collab-details-page">
       {banner.message && (
@@ -254,9 +333,49 @@ export default function CollabDetailsPage() {
                   <small>{creatorRole} - Posted {formatDate(post?.createdAt)}</small>
                 </div>
               </div>
-              <div className="pill-row">
-                <span className={`pill ${isOpen ? 'tone-ok' : 'tone-muted'}`}>{post?.status || 'OPEN'}</span>
-                <span className="pill">Pending requests: {pendingRequestCount}</span>
+              <div className="post-card-header-tools">
+                <div className="pill-row">
+                  <span className={`pill ${isOpen ? 'tone-ok' : 'tone-muted'}`}>{post?.status || 'OPEN'}</span>
+                  <span className="pill">Pending requests: {pendingRequestCount}</span>
+                  {post?.pinned && <span className="pill tone-pin">Pinned</span>}
+                  {isArchived && <span className="pill tone-muted">Archived</span>}
+                </div>
+
+                {canManageCurrentPost && (
+                  <PostActionsMenu
+                    buttonLabel={`Open actions for ${getPostLabel(post, 'collaboration')}`}
+                    menuLabel={`Post actions for ${getPostLabel(post, 'collaboration')}`}
+                    actions={[
+                      {
+                        key: 'pin',
+                        label: post?.pinned ? 'Unpin' : 'Pin',
+                        hidden: !canPinPosts,
+                        disabled: busyAction,
+                        onSelect: handleTogglePinned,
+                      },
+                      {
+                        key: 'edit',
+                        label: 'Edit',
+                        hidden: !isOwner,
+                        disabled: busyAction,
+                        onSelect: () => setEditOpen(true),
+                      },
+                      {
+                        key: 'archive',
+                        label: 'Archive',
+                        disabled: busyAction || isArchived,
+                        onSelect: handleArchivePost,
+                      },
+                      {
+                        key: 'delete',
+                        label: 'Delete',
+                        tone: 'danger',
+                        disabled: busyAction,
+                        onSelect: handleDeletePost,
+                      },
+                    ]}
+                  />
+                )}
               </div>
             </header>
 
@@ -315,7 +434,7 @@ export default function CollabDetailsPage() {
                 <button
                   className="btn btn-accent"
                   type="button"
-                  disabled={busyAction}
+                  disabled={busyAction || isArchived}
                   onClick={handleToggleStatus}
                 >
                   {busyAction
@@ -464,6 +583,17 @@ export default function CollabDetailsPage() {
           </>
         )}
       </section>
+
+      <CollabPostEditModal
+        open={editOpen}
+        post={post}
+        onClose={() => setEditOpen(false)}
+        onSaved={(updatedPost) => {
+          if (!updatedPost?.id) return;
+          setPost(updatedPost);
+        }}
+        onFeedback={setBanner}
+      />
     </div>
   );
 }

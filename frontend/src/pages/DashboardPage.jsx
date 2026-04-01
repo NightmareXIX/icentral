@@ -28,6 +28,7 @@ const PROFILE_SORT_OPTIONS = [
   { value: 'upvotes', label: 'Most upvoted' },
 ];
 const COMPOSER_TYPE_OPTIONS = [
+  { value: 'GENERAL', label: 'General' },
   { value: 'ANNOUNCEMENT', label: 'Announcement' },
   { value: 'JOB', label: 'Job' },
   { value: 'EVENT', label: 'Event' },
@@ -36,7 +37,7 @@ const COMPOSER_TYPE_OPTIONS = [
   { value: 'COLLAB', label: 'Collaboration' },
 ];
 const INITIAL_COMPOSER_FORM = {
-  type: 'EVENT',
+  type: 'GENERAL',
   title: '',
   summary: '',
   status: 'published',
@@ -253,7 +254,9 @@ export default function DashboardPage() {
     if (!allowedComposerTypeOptions.some((option) => option.value === composerForm.type)) {
       setComposerForm((prev) => ({
         ...prev,
-        type: allowedComposerTypeOptions[0]?.value || 'EVENT',
+        type: allowedComposerTypeOptions.find((option) => option.value === 'GENERAL')?.value
+          || allowedComposerTypeOptions[0]?.value
+          || 'GENERAL',
       }));
     }
   }, [allowedComposerTypeOptions, composerForm.type]);
@@ -449,6 +452,14 @@ export default function DashboardPage() {
   }
 
   const pageReady = !loadingProfile && !loadingPosts;
+
+  function handlePostUpdated(postId, patch) {
+    setPosts((prev) => prev.map((item) => (item.id === postId ? { ...item, ...patch } : item)));
+  }
+
+  function handlePostDeleted(postId) {
+    setPosts((prev) => prev.filter((item) => item.id !== postId));
+  }
 
   return (
     <div className="dashboard-page profile-page-shell">
@@ -735,7 +746,14 @@ export default function DashboardPage() {
             ) : (
               <div className="feed-grid profile-post-grid">
                 {posts.map((item, index) => (
-                  <PostResultCard key={item.id || `dashboard-post-${index}`} post={item} index={index} />
+                  <PostResultCard
+                    key={item.id || `dashboard-post-${index}`}
+                    post={item}
+                    index={index}
+                    onPostUpdated={handlePostUpdated}
+                    onPostDeleted={handlePostDeleted}
+                    onActionFeedback={setBanner}
+                  />
                 ))}
               </div>
             )}

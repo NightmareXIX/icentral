@@ -51,6 +51,7 @@ export default function SearchPage() {
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
+  const [banner, setBanner] = useState({ type: 'idle', message: '' });
   const [debouncedQuery, setDebouncedQuery] = useState('');
 
   const q = useMemo(() => normalizeQuery(searchParams.get('q') || ''), [searchParams]);
@@ -160,8 +161,23 @@ export default function SearchPage() {
     }
   }
 
+  function handlePostUpdated(postId, patch) {
+    setItems((prev) => prev.map((item) => (item.id === postId ? { ...item, ...patch } : item)));
+  }
+
+  function handlePostDeleted(postId) {
+    setItems((prev) => prev.filter((item) => item.id !== postId));
+  }
+
   return (
     <div className="home-feed-page search-page">
+      {banner.message && (
+        <section className={`banner banner-${banner.type === 'error' ? 'error' : 'success'}`} aria-live="polite">
+          <p>{banner.message}</p>
+          <button type="button" onClick={() => setBanner({ type: 'idle', message: '' })}>Dismiss</button>
+        </section>
+      )}
+
       <section className="panel feed-panel search-panel">
         <div className="panel-header feed-header">
           <div>
@@ -212,7 +228,14 @@ export default function SearchPage() {
               <>
                 <div className="feed-grid search-results-grid">
                   {items.map((item, index) => (
-                    <PostResultCard key={item.id || `search-item-${index}`} post={item} index={index} />
+                    <PostResultCard
+                      key={item.id || `search-item-${index}`}
+                      post={item}
+                      index={index}
+                      onPostUpdated={handlePostUpdated}
+                      onPostDeleted={handlePostDeleted}
+                      onActionFeedback={setBanner}
+                    />
                   ))}
                 </div>
 

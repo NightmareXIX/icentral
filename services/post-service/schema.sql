@@ -6,7 +6,7 @@ create extension if not exists pg_trgm;
 
 create table if not exists public.posts (
     id uuid primary key default gen_random_uuid(),
-    type text not null,
+    type text not null default 'GENERAL',
     title text,
     summary text,
     author_id uuid,
@@ -17,6 +17,9 @@ create table if not exists public.posts (
     updated_at timestamptz not null default now(),
     constraint posts_status_check check (status in ('draft', 'published', 'archived'))
 );
+
+alter table if exists public.posts
+    alter column type set default 'GENERAL';
 
 create table if not exists public.tags (
     id uuid primary key default gen_random_uuid(),

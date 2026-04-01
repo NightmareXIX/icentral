@@ -895,9 +895,15 @@ function buildPostPayload(body, { partial = false } = {}) {
         expires_at: expiresAtResult.value,
     });
 
+    if (typeof postFields.type === 'string') {
+        postFields.type = normalizeText(postFields.type)
+            .replace(/[\s-]+/g, '_')
+            .toUpperCase();
+    }
+
     if (!partial) {
-        if (!postFields.type || typeof postFields.type !== 'string') {
-            errors.push('type is required');
+        if (!postFields.type) {
+            postFields.type = 'GENERAL';
         }
         if (postFields.author_id !== undefined && String(postFields.author_id).trim() === '') {
             errors.push('authorId cannot be empty');
@@ -5257,8 +5263,18 @@ app.post('/posts', ensureDb, async (req, res) => {
     }
 });
 
-app.patch('/posts/:id', ensureDb, async (req, res) => {
+app.patch('/posts/:id', ensureDb, ensureAuthenticated, async (req, res) => {
     try {
+        const postId = normalizeText(req.params.id);
+        if (!postId) {
+            return res.status(400).json({ error: 'post id is required' });
+        }
+
+        const postMeta = await getPostMetaById(postId);
+        if (!postMeta) {
+            return res.status(404).json({ error: 'Post not found' });
+        }
+
         const payload = buildPostPayload(req.body, { partial: true });
         if (payload.errors.length) {
             return res.status(400).json({ error: 'Validation failed', details: payload.errors });
@@ -5267,10 +5283,18 @@ app.patch('/posts/:id', ensureDb, async (req, res) => {
         const hasPostFields = Object.keys(payload.postFields).length > 0;
         const hasTagChanges = payload.tagsProvided;
         const hasRefChanges = payload.refProvided;
+        const hasAuthorUpdate = Object.prototype.hasOwnProperty.call(payload.postFields, 'author_id');
+        const hasPinnedUpdate = Object.prototype.hasOwnProperty.call(payload.postFields, 'pinned');
         const hasTypeUpdate = Object.prototype.hasOwnProperty.call(payload.postFields, 'type');
         if (hasTypeUpdate && isCollabType(payload.postFields.type)) {
             return res.status(400).json({
                 error: 'Use PATCH /collab-posts/:id to manage collaboration posts.',
+            });
+        }
+
+        if (hasAuthorUpdate) {
+            return res.status(400).json({
+                error: 'authorId cannot be updated for an existing post.',
             });
         }
 
@@ -5280,6 +5304,14 @@ app.patch('/posts/:id', ensureDb, async (req, res) => {
             ? String(payload.postFields.status || '').trim().toLowerCase()
             : '';
         const isArchiveUpdate = isStatusUpdate && normalizedNextStatus === 'archived';
+        const isOwner = String(postMeta.author_id || '') === String(req.requestUser.id || '');
+        const isModerator = isModeratorRole(req.requestUser.role);
+        const hasOwnerContentFieldUpdates = Object.keys(payload.postFields).some((field) => {
+            if (field === 'pinned') return false;
+            if (field === 'status' && isArchiveUpdate) return false;
+            return true;
+        });
+        const hasOwnerContentChanges = hasOwnerContentFieldUpdates || hasTagChanges || hasRefChanges;
 
         if (!hasPostFields && !hasTagChanges && !hasRefChanges) {
             return res.status(400).json({
@@ -5287,48 +5319,40 @@ app.patch('/posts/:id', ensureDb, async (req, res) => {
             });
         }
 
+        if (hasPinnedUpdate && !isModerator) {
+            return res.status(403).json({
+                error: 'Only faculty/admin can pin posts.',
+            });
+        }
+
+        if (hasOwnerContentChanges && !isOwner) {
+            return res.status(403).json({
+                error: 'Only the original author can edit this post.',
+            });
+        }
+
         if (isArchiveUpdate) {
-            const requestUser = getRequestUser(req);
-            if (!requestUser?.id) {
-                return res.status(401).json({ error: 'Authentication is required to archive posts.' });
-            }
-            if (!isModeratorRole(requestUser.role)) {
-                const authorId = await getPostAuthorId(req.params.id);
-                if (authorId === null) {
-                    return res.status(404).json({ error: 'Post not found' });
-                }
-
-                if (!authorId || String(authorId) !== String(requestUser.id)) {
-                    return res.status(403).json({ error: 'Only faculty/admin or the original author can archive posts.' });
-                }
+            if (!isModerator && !isOwner) {
+                return res.status(403).json({ error: 'Only faculty/admin or the original author can archive posts.' });
             }
         }
 
-        if (isExpiryUpdate) {
-            const requestUser = getRequestUser(req);
-            if (!requestUser?.id) {
-                return res.status(401).json({ error: 'Authentication is required to update expiry.' });
-            }
-
-            if (!isModeratorRole(requestUser.role)) {
-                const authorId = await getPostAuthorId(req.params.id);
-                if (authorId === null) {
-                    return res.status(404).json({ error: 'Post not found' });
-                }
-
-                if (!authorId || String(authorId) !== String(requestUser.id)) {
-                    return res.status(403).json({
-                        error: 'Only moderators and the original author can update expiry.',
-                    });
-                }
-            }
+        if (isExpiryUpdate && !isOwner) {
+            return res.status(403).json({
+                error: 'Only the original author can update expiry.',
+            });
         }
+
+        const nowIso = new Date().toISOString();
 
         if (hasPostFields) {
             const { data: updatedRows, error: updateError } = await supabase
                 .from(CONFIG.tables.posts)
-                .update(payload.postFields)
-                .eq('id', req.params.id)
+                .update({
+                    ...payload.postFields,
+                    updated_at: nowIso,
+                })
+                .eq('id', postId)
                 .select('id');
 
             if (updateError) {
@@ -5339,21 +5363,30 @@ app.patch('/posts/:id', ensureDb, async (req, res) => {
                 return res.status(404).json({ error: 'Post not found' });
             }
         } else {
-            const post = await getPostById(req.params.id);
-            if (!post) {
+            const { data: touchedRows, error: touchError } = await supabase
+                .from(CONFIG.tables.posts)
+                .update({ updated_at: nowIso })
+                .eq('id', postId)
+                .select('id');
+
+            if (touchError) {
+                throw touchError;
+            }
+
+            if (!touchedRows || touchedRows.length === 0) {
                 return res.status(404).json({ error: 'Post not found' });
             }
         }
 
         if (hasTagChanges) {
-            await replacePostTags(req.params.id, payload.tagIds, payload.tagNames);
+            await replacePostTags(postId, payload.tagIds, payload.tagNames);
         }
 
         if (hasRefChanges) {
-            await replacePostRef(req.params.id, payload.ref);
+            await replacePostRef(postId, payload.ref);
         }
 
-        const fullPost = await getPostById(req.params.id);
+        const fullPost = await getPostById(postId, { requestUserId: req.requestUser.id });
         return res.json({
             message: 'Post updated',
             data: fullPost,

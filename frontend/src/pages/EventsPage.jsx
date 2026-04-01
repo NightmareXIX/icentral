@@ -1,7 +1,10 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
+import PostActionsMenu from '../components/posts/PostActionsMenu';
+import PostEditModal from '../components/posts/PostEditModal';
 import { getPostAuthorDisplayName } from '../utils/postAuthor';
+import { getPostLabel, isFacultyUser } from '../utils/postManagement';
 import { openUserProfile } from '../utils/profileNavigation';
 import { apiRequest } from '../utils/profileApi';
 import EventMetadataBlock from '../components/posts/EventMetadataBlock';
@@ -141,7 +144,8 @@ function buildFeedParams({ type, filters, search }) {
 
 export default function EventsPage() {
   const navigate = useNavigate();
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated, isModerator, user } = useAuth();
+  const canPinPosts = isFacultyUser(user);
   const currentUserId = String(user?.id || '').trim();
 
   const [feedItems, setFeedItems] = useState([]);
@@ -164,6 +168,7 @@ export default function EventsPage() {
   const [commentsLoadingPostId, setCommentsLoadingPostId] = useState(null);
   const [commentsSubmittingPostId, setCommentsSubmittingPostId] = useState(null);
   const [commentDrafts, setCommentDrafts] = useState({});
+  const [editingPost, setEditingPost] = useState(null);
 
   const deferredSearch = useDeferredValue(searchInput);
   const activeSearch = deferredSearch.trim();
@@ -281,6 +286,15 @@ export default function EventsPage() {
     setFeedItems((prev) => prev.map((item) => (item.id === postId ? { ...item, ...patch } : item)));
   }
 
+  function handleEditedPostSaved(updatedPost) {
+    if (!updatedPost?.id) return;
+    setFeedItems((prev) => prev.map((item) => (
+      item.id === updatedPost.id
+        ? { ...item, ...updatedPost }
+        : item
+    )));
+  }
+
   function shouldIgnoreCardNavigation(target) {
     if (!(target instanceof Element)) return false;
     return Boolean(target.closest(CARD_NAV_IGNORE_SELECTOR));
@@ -297,6 +311,11 @@ export default function EventsPage() {
       event.stopPropagation();
     }
     openUserProfile(navigate, targetUserId, currentUserId);
+  }
+
+  function isPostOwner(post) {
+    if (!post?.authorId || !user?.id) return false;
+    return String(post.authorId) === String(user.id);
   }
 
   async function loadComments(postId, options = {}) {
@@ -429,6 +448,84 @@ export default function EventsPage() {
       setBanner({ type: 'error', message: `Could not share post: ${error.message}` });
     } finally {
       setSharingPostId(null);
+    }
+  }
+
+  async function handleArchivePost(post) {
+    if (!post?.id) return;
+    if (!isAuthenticated) {
+      setBanner({ type: 'error', message: 'Sign in to update posts.' });
+      return;
+    }
+
+    setActionBusyPostId(post.id);
+    try {
+      await apiRequest(`/posts/posts/${post.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ archive: true }),
+      });
+      updatePostEngagement(post.id, { status: 'archived' });
+      setBanner({ type: 'success', message: 'Event post archived.' });
+    } catch (error) {
+      setBanner({ type: 'error', message: `Post update failed: ${error.message}` });
+    } finally {
+      setActionBusyPostId(null);
+    }
+  }
+
+  async function handleDeletePost(post) {
+    if (!post?.id) return;
+    if (!isAuthenticated) {
+      setBanner({ type: 'error', message: 'Sign in to delete posts.' });
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete "${getPostLabel(post)}" permanently?`);
+    if (!confirmed) return;
+
+    setActionBusyPostId(post.id);
+    try {
+      await apiRequest(`/posts/posts/${post.id}`, { method: 'DELETE' });
+      setFeedItems((prev) => prev.filter((item) => item.id !== post.id));
+      setCommentsByPostId((prev) => {
+        if (!Object.prototype.hasOwnProperty.call(prev, post.id)) return prev;
+        const next = { ...prev };
+        delete next[post.id];
+        return next;
+      });
+      if (openCommentsPostId === post.id) setOpenCommentsPostId(null);
+      setBanner({ type: 'success', message: 'Event post deleted.' });
+    } catch (error) {
+      setBanner({ type: 'error', message: `Post delete failed: ${error.message}` });
+    } finally {
+      setActionBusyPostId(null);
+    }
+  }
+
+  async function handleTogglePinned(post) {
+    if (!post?.id) return;
+    if (!isAuthenticated) {
+      setBanner({ type: 'error', message: 'Sign in to update posts.' });
+      return;
+    }
+    if (!canPinPosts) {
+      setBanner({ type: 'error', message: 'Only faculty accounts can pin posts.' });
+      return;
+    }
+
+    const nextPinned = !Boolean(post?.pinned);
+    setActionBusyPostId(post.id);
+    try {
+      await apiRequest(`/posts/posts/${post.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ pinned: nextPinned }),
+      });
+      updatePostEngagement(post.id, { pinned: nextPinned });
+      setBanner({ type: 'success', message: nextPinned ? 'Event post pinned.' : 'Event post unpinned.' });
+    } catch (error) {
+      setBanner({ type: 'error', message: `Post update failed: ${error.message}` });
+    } finally {
+      setActionBusyPostId(null);
     }
   }
 
@@ -760,6 +857,14 @@ export default function EventsPage() {
         />
       )}
 
+      <PostEditModal
+        open={Boolean(editingPost)}
+        post={editingPost}
+        onClose={() => setEditingPost(null)}
+        onSaved={handleEditedPostSaved}
+        onFeedback={setBanner}
+      />
+
       <section className="panel feed-panel collab-feed-panel">
         <div className="panel-header feed-header">
           <div>
@@ -835,7 +940,7 @@ export default function EventsPage() {
             {feedItems.map((item, index) => {
               const authorLabel = getPostAuthorDisplayName(item, 'Community member');
               const authorId = item?.author?.id || item?.authorId || null;
-              const isOwner = String(item?.authorId || '') === currentUserId;
+              const isOwner = isPostOwner(item);
               const canVolunteer = isVolunteerEligibleEvent(item) && !isOwner;
               const alreadyEnrolled = Boolean(item?.viewerHasVolunteerEnrollment);
               const eventEnded = isEventOver(item);
@@ -868,8 +973,47 @@ export default function EventsPage() {
                         <small>{formatDate(item.createdAt)}</small>
                       </div>
                     </div>
-                    <div className="pill-row">
-                      <span className={`pill tone-${statusTone(item.status)}`}>{item.status || 'unknown'}</span>
+                    <div className="post-card-header-tools">
+                      <div className="pill-row">
+                        <span className={`pill tone-${statusTone(item.status)}`}>{item.status || 'unknown'}</span>
+                        {item.pinned && <span className="pill tone-pin">Pinned</span>}
+                      </div>
+
+                      {(isModerator || isOwner) && (
+                        <PostActionsMenu
+                          buttonLabel={`Open actions for ${getPostLabel(item)}`}
+                          menuLabel={`Post actions for ${getPostLabel(item)}`}
+                          actions={[
+                            {
+                              key: 'pin',
+                              label: item.pinned ? 'Unpin' : 'Pin',
+                              hidden: !canPinPosts,
+                              disabled: actionBusyPostId === item.id || !isAuthenticated,
+                              onSelect: () => handleTogglePinned(item),
+                            },
+                            {
+                              key: 'edit',
+                              label: 'Edit',
+                              hidden: !isOwner,
+                              disabled: actionBusyPostId === item.id,
+                              onSelect: () => setEditingPost(item),
+                            },
+                            {
+                              key: 'archive',
+                              label: 'Archive',
+                              disabled: actionBusyPostId === item.id || !isAuthenticated || item.status === 'archived',
+                              onSelect: () => handleArchivePost(item),
+                            },
+                            {
+                              key: 'delete',
+                              label: 'Delete',
+                              tone: 'danger',
+                              disabled: actionBusyPostId === item.id || !isAuthenticated,
+                              onSelect: () => handleDeletePost(item),
+                            },
+                          ]}
+                        />
+                      )}
                     </div>
                   </div>
 

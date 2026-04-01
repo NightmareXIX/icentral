@@ -397,6 +397,17 @@ export async function createCollabPost(payload, _currentUser) {
   return normalizeCollabPost(result?.data || {});
 }
 
+export async function updateCollabPost(postId, payload, _currentUser) {
+  void _currentUser;
+  const normalizedPostId = normalizeText(postId);
+  const body = buildCollabPayload(payload);
+  const result = await apiRequest(`${COLLAB_POSTS_PATH}/${encodeURIComponent(normalizedPostId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+  return normalizeCollabPost(result?.data || {});
+}
+
 export async function submitCollabJoinRequest(postId, _currentUser, message) {
   void _currentUser;
   const normalizedPostId = normalizeText(postId);

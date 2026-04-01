@@ -1,7 +1,10 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
+import PostActionsMenu from '../components/posts/PostActionsMenu';
+import PostEditModal from '../components/posts/PostEditModal';
 import { getJobDetailsFromPost } from '../utils/jobPortalStorage';
+import { getPostLabel, isFacultyUser } from '../utils/postManagement';
 import { openUserProfile } from '../utils/profileNavigation';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
@@ -109,11 +112,13 @@ export default function JobPortalPage() {
   const [commentsSubmittingPostId, setCommentsSubmittingPostId] = useState(null);
   const [commentDrafts, setCommentDrafts] = useState({});
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [editingPost, setEditingPost] = useState(null);
 
   const deferredSearch = useDeferredValue(searchInput);
   const activeSearch = deferredSearch.trim().toLowerCase();
   const currentUserId = String(user?.id || '').trim();
   const normalizedRole = String(user?.role || '').toLowerCase();
+  const canPinPosts = isFacultyUser(user);
   const isAlumni = normalizedRole === 'alumni';
   const isFacultyOrAdmin = normalizedRole === 'faculty' || normalizedRole === 'admin';
   const fallbackStatus = String(user?.alumniVerificationStatus || '').toLowerCase();
@@ -300,6 +305,15 @@ export default function JobPortalPage() {
       if (item.id !== postId) return item;
       return { ...item, ...patch };
     }));
+  }
+
+  function handleEditedPostSaved(updatedPost) {
+    if (!updatedPost?.id) return;
+    setFeedItems((prev) => prev.map((item) => (
+      item.id === updatedPost.id
+        ? { ...item, ...updatedPost }
+        : item
+    )));
   }
 
   function isPostOwner(post) {
@@ -880,7 +894,52 @@ export default function JobPortalPage() {
                       <h4>{details.jobTitle}</h4>
                       <p>{details.companyName}</p>
                     </div>
-                    <span className="pill">{formatDate(item.createdAt)}</span>
+                    <div className="post-card-header-tools">
+                      <div className="pill-row">
+                        <span className="pill">{formatDate(item.createdAt)}</span>
+                        {item.pinned && <span className="pill tone-pin">Pinned</span>}
+                      </div>
+
+                      {(isFacultyOrAdmin || isOwner) && (
+                        <PostActionsMenu
+                          buttonLabel={`Open actions for ${getPostLabel(item)}`}
+                          menuLabel={`Post actions for ${getPostLabel(item)}`}
+                          actions={[
+                            {
+                              key: 'pin',
+                              label: item.pinned ? 'Unpin' : 'Pin',
+                              hidden: !canPinPosts,
+                              disabled: actionBusyPostId === item.id || !isAuthenticated,
+                              onSelect: () => patchPost(
+                                item.id,
+                                { pinned: !item.pinned },
+                                item.pinned ? 'Job post unpinned.' : 'Job post pinned.',
+                              ),
+                            },
+                            {
+                              key: 'edit',
+                              label: 'Edit',
+                              hidden: !isOwner,
+                              disabled: actionBusyPostId === item.id,
+                              onSelect: () => setEditingPost(item),
+                            },
+                            {
+                              key: 'archive',
+                              label: 'Archive',
+                              disabled: actionBusyPostId === item.id || !isAuthenticated || item.status === 'archived',
+                              onSelect: () => patchPost(item.id, { archive: true }, 'Job post archived.'),
+                            },
+                            {
+                              key: 'delete',
+                              label: 'Delete',
+                              tone: 'danger',
+                              disabled: actionBusyPostId === item.id || !isAuthenticated,
+                              onSelect: () => deletePost(item),
+                            },
+                          ]}
+                        />
+                      )}
+                    </div>
                   </header>
 
                   <div className="job-card-meta-row">
@@ -938,27 +997,6 @@ export default function JobPortalPage() {
                       <span className="sr-only">Comments</span>
                     </button>
 
-                    {(isFacultyOrAdmin || isOwner) && (
-                      <button
-                        className="reddit-action-btn archive-action"
-                        type="button"
-                        disabled={actionBusyPostId === item.id || !isAuthenticated || item.status === 'archived'}
-                        onClick={() => patchPost(item.id, { archive: true }, 'Job post archived.')}
-                      >
-                        Archive
-                      </button>
-                    )}
-
-                    {(isFacultyOrAdmin || isOwner) && (
-                      <button
-                        className="reddit-action-btn delete-action"
-                        type="button"
-                        disabled={actionBusyPostId === item.id || !isAuthenticated}
-                        onClick={() => deletePost(item)}
-                      >
-                        Delete
-                      </button>
-                    )}
                   </div>
 
                   {openCommentsPostId === item.id && (
@@ -1066,6 +1104,14 @@ export default function JobPortalPage() {
           </div>
         )}
       </section>
+
+      <PostEditModal
+        open={Boolean(editingPost)}
+        post={editingPost}
+        onClose={() => setEditingPost(null)}
+        onSaved={handleEditedPostSaved}
+        onFeedback={setBanner}
+      />
     </div>
   );
 }

@@ -39,6 +39,7 @@ export default function ProfilePage() {
   const [loadingProfile, setLoadingProfile] = useState(true);
   const [loadingPosts, setLoadingPosts] = useState(true);
   const [pageError, setPageError] = useState('');
+  const [banner, setBanner] = useState({ type: 'idle', message: '' });
 
   useEffect(() => {
     if (!targetUserId) return;
@@ -118,8 +119,23 @@ export default function ProfilePage() {
 
   const pageLoading = loadingProfile || loadingPosts;
 
+  function handlePostUpdated(postId, patch) {
+    setPosts((prev) => prev.map((item) => (item.id === postId ? { ...item, ...patch } : item)));
+  }
+
+  function handlePostDeleted(postId) {
+    setPosts((prev) => prev.filter((item) => item.id !== postId));
+  }
+
   return (
     <div className="dashboard-page profile-page-shell public-profile-page">
+      {banner.message && (
+        <section className={`banner banner-${banner.type === 'error' ? 'error' : 'success'}`} aria-live="polite">
+          <p>{banner.message}</p>
+          <button type="button" onClick={() => setBanner({ type: 'idle', message: '' })}>Dismiss</button>
+        </section>
+      )}
+
       {pageError && (
         <section className="inline-alert" role="alert">
           <p>{pageError}</p>
@@ -198,7 +214,14 @@ export default function ProfilePage() {
           ) : (
             <div className="feed-grid profile-post-grid">
               {posts.map((item, index) => (
-                <PostResultCard key={item.id || `profile-post-${index}`} post={item} index={index} />
+                <PostResultCard
+                  key={item.id || `profile-post-${index}`}
+                  post={item}
+                  index={index}
+                  onPostUpdated={handlePostUpdated}
+                  onPostDeleted={handlePostDeleted}
+                  onActionFeedback={setBanner}
+                />
               ))}
             </div>
           )}

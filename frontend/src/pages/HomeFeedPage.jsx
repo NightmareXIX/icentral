@@ -1,8 +1,11 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
+import PostActionsMenu from '../components/posts/PostActionsMenu';
+import PostEditModal from '../components/posts/PostEditModal';
 import { getPostAuthorDisplayName } from '../utils/postAuthor';
 import { openUserProfile } from '../utils/profileNavigation';
+import { getPostLabel, isFacultyUser } from '../utils/postManagement';
 import { getPostTypeIconKey, getPostTypeIconPaths } from '../utils/postTypeIcon';
 import EventMetadataBlock from '../components/posts/EventMetadataBlock';
 import VolunteerEnrollmentModal from '../components/posts/VolunteerEnrollmentModal';
@@ -16,7 +19,7 @@ import {
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
 
 const initialPostForm = {
-  type: 'EVENT',
+  type: 'GENERAL',
   title: '',
   summary: '',
   status: 'published',
@@ -26,6 +29,7 @@ const initialPostForm = {
 };
 
 const postTypeOptions = [
+  { value: 'GENERAL', label: 'General' },
   { value: 'ANNOUNCEMENT', label: 'Announcement' },
   { value: 'JOB', label: 'Job' },
   { value: 'EVENT', label: 'Event' },
@@ -186,10 +190,12 @@ export default function HomeFeedPage() {
   const [commentDrafts, setCommentDrafts] = useState({});
   const [enrollingPostId, setEnrollingPostId] = useState(null);
   const [volunteerModalPost, setVolunteerModalPost] = useState(null);
+  const [editingPost, setEditingPost] = useState(null);
 
   const deferredSearch = useDeferredValue(searchInput);
   const activeSearch = deferredSearch.trim();
   const normalizedRole = String(user?.role || '').toLowerCase();
+  const canPinPosts = isFacultyUser(user);
   const currentUserId = String(user?.id || '').trim();
   const allowedComposerTypeOptions = useMemo(
     () => postTypeOptions.filter((option) => canRoleCreateType(normalizedRole, option.value)),
@@ -282,7 +288,9 @@ export default function HomeFeedPage() {
 
   useEffect(() => {
     if (!allowedComposerTypeOptions.some((option) => option.value === postForm.type)) {
-      const fallbackType = allowedComposerTypeOptions[0]?.value || 'EVENT';
+      const fallbackType = allowedComposerTypeOptions.find((option) => option.value === 'GENERAL')?.value
+        || allowedComposerTypeOptions[0]?.value
+        || 'GENERAL';
       setPostForm((prev) => ({ ...prev, type: fallbackType }));
     }
   }, [allowedComposerTypeOptions, postForm.type]);
@@ -346,6 +354,15 @@ export default function HomeFeedPage() {
 
   function refreshFeed() {
     setRefreshTick((prev) => prev + 1);
+  }
+
+  function handleEditedPostSaved(updatedPost) {
+    if (!updatedPost?.id) return;
+    setFeedItems((prev) => prev.map((item) => (
+      item.id === updatedPost.id
+        ? { ...item, ...updatedPost }
+        : item
+    )));
   }
 
   function openImagePicker() {
@@ -1020,6 +1037,7 @@ export default function HomeFeedPage() {
             <span>Type</span>
             <select value={filters.type} onChange={(e) => updateFilter('type', e.target.value)}>
               <option value="">All</option>
+              <option value="GENERAL">General</option>
               <option value="ANNOUNCEMENT">Announcement</option>
               <option value="JOB">Job</option>
               <option value="EVENT">Event</option>
@@ -1103,9 +1121,51 @@ export default function HomeFeedPage() {
                       </div>
                     </div>
 
-                    <div className="pill-row">
-                      <span className={`pill tone-${statusTone(item.status)}`}>{item.status || 'unknown'}</span>
-                      {item.pinned && <span className="pill tone-pin">Pinned</span>}
+                    <div className="post-card-header-tools">
+                      <div className="pill-row">
+                        <span className={`pill tone-${statusTone(item.status)}`}>{item.status || 'unknown'}</span>
+                        {item.pinned && <span className="pill tone-pin">Pinned</span>}
+                      </div>
+
+                      {(isModerator || isPostOwner(item)) && (
+                        <PostActionsMenu
+                          buttonLabel={`Open actions for ${getPostLabel(item)}`}
+                          menuLabel={`Post actions for ${getPostLabel(item)}`}
+                          actions={[
+                            {
+                              key: 'pin',
+                              label: item.pinned ? 'Unpin' : 'Pin',
+                              hidden: !canPinPosts,
+                              disabled: actionBusyPostId === item.id || !isAuthenticated,
+                              onSelect: () => patchPost(
+                                item.id,
+                                { pinned: !item.pinned },
+                                item.pinned ? 'Post unpinned.' : 'Post pinned.',
+                              ),
+                            },
+                            {
+                              key: 'edit',
+                              label: 'Edit',
+                              hidden: !isPostOwner(item),
+                              disabled: actionBusyPostId === item.id,
+                              onSelect: () => setEditingPost(item),
+                            },
+                            {
+                              key: 'archive',
+                              label: 'Archive',
+                              disabled: actionBusyPostId === item.id || !isAuthenticated || item.status === 'archived',
+                              onSelect: () => patchPost(item.id, { archive: true }, 'Post archived.'),
+                            },
+                            {
+                              key: 'delete',
+                              label: 'Delete',
+                              tone: 'danger',
+                              disabled: actionBusyPostId === item.id || !isAuthenticated,
+                              onSelect: () => deletePost(item),
+                            },
+                          ]}
+                        />
+                      )}
                     </div>
                   </div>
 
@@ -1217,27 +1277,6 @@ export default function HomeFeedPage() {
                       </button>
                     )}
 
-                    {(isModerator || isPostOwner(item)) && (
-                      <button
-                        className="reddit-action-btn archive-action"
-                        type="button"
-                        disabled={actionBusyPostId === item.id || !isAuthenticated || item.status === 'archived'}
-                        onClick={() => patchPost(item.id, { archive: true }, 'Post archived.')}
-                      >
-                        Archive
-                      </button>
-                    )}
-
-                    {(isModerator || isPostOwner(item)) && (
-                      <button
-                        className="reddit-action-btn delete-action"
-                        type="button"
-                        disabled={actionBusyPostId === item.id || !isAuthenticated}
-                        onClick={() => deletePost(item)}
-                      >
-                        Delete
-                      </button>
-                    )}
                   </div>
 
                   {openCommentsPostId === item.id && (
@@ -1315,6 +1354,14 @@ export default function HomeFeedPage() {
           </div>
         )}
       </section>
+
+      <PostEditModal
+        open={Boolean(editingPost)}
+        post={editingPost}
+        onClose={() => setEditingPost(null)}
+        onSaved={handleEditedPostSaved}
+        onFeedback={setBanner}
+      />
     </div>
   );
 }

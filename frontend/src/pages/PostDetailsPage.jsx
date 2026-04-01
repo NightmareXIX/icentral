@@ -1,7 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
+import PostActionsMenu from '../components/posts/PostActionsMenu';
+import PostEditModal from '../components/posts/PostEditModal';
 import { getJobDetailsFromPost } from '../utils/jobPortalStorage';
+import {
+  archivePostById,
+  canManagePost,
+  deletePostById,
+  getPostLabel,
+  isFacultyUser,
+  isPostArchived,
+  setPostPinned,
+} from '../utils/postManagement';
 import { openUserProfile } from '../utils/profileNavigation';
 import EventMetadataBlock from '../components/posts/EventMetadataBlock';
 import VolunteerEnrollmentModal from '../components/posts/VolunteerEnrollmentModal';
@@ -149,7 +160,7 @@ function getCommentAuthorLabel(comment, currentUser = null) {
 export default function PostDetailsPage() {
   const { postId } = useParams();
   const navigate = useNavigate();
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated, isModerator, user } = useAuth();
   const currentUserId = String(user?.id || '').trim();
 
   const [post, setPost] = useState(null);
@@ -165,6 +176,7 @@ export default function PostDetailsPage() {
   const [volunteerModalOpen, setVolunteerModalOpen] = useState(false);
   const [volunteers, setVolunteers] = useState([]);
   const [loadingVolunteers, setLoadingVolunteers] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
 
   const normalizedRole = String(user?.role || '').toLowerCase();
   const isJobPost = String(post?.type || '').toUpperCase() === 'JOB';
@@ -173,6 +185,9 @@ export default function PostDetailsPage() {
   const isVolunteerEvent = isVolunteerEligibleEvent(post);
   const jobDetails = isJobPost ? getJobDetailsFromPost(post) : null;
   const isOwner = post?.authorId && user?.id && String(post.authorId) === String(user.id);
+  const canManageCurrentPost = canManagePost(post, user, isModerator);
+  const canPinPosts = isFacultyUser(user);
+  const isArchived = isPostArchived(post);
   const canViewApplications = isJobPost && isOwner && normalizedRole === 'alumni';
 
   const imageRef = useMemo(() => {
@@ -403,6 +418,77 @@ export default function PostDetailsPage() {
     }
   }
 
+  function getReturnPathForPost(activePost) {
+    const type = String(activePost?.type || '').toUpperCase();
+    if (type === 'JOB') return '/job-portal';
+    if (type === 'EVENT' || type === 'EVENT_RECAP') return '/events';
+    if (type === 'COLLAB') return '/collaborate';
+    return '/home';
+  }
+
+  async function handleArchivePost() {
+    if (!post?.id) return;
+    if (!isAuthenticated) {
+      setBanner({ type: 'error', message: 'Sign in to update posts.' });
+      return;
+    }
+
+    setActionBusy(true);
+    try {
+      await archivePostById(post.id);
+      setPost((prev) => (prev ? { ...prev, status: 'archived' } : prev));
+      setBanner({ type: 'success', message: 'Post archived.' });
+    } catch (error) {
+      setBanner({ type: 'error', message: `Post update failed: ${error.message}` });
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  async function handleDeletePost() {
+    if (!post?.id) return;
+    if (!isAuthenticated) {
+      setBanner({ type: 'error', message: 'Sign in to delete posts.' });
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete "${getPostLabel(post)}" permanently?`);
+    if (!confirmed) return;
+
+    setActionBusy(true);
+    try {
+      await deletePostById(post.id);
+      navigate(getReturnPathForPost(post), { replace: true });
+    } catch (error) {
+      setBanner({ type: 'error', message: `Post delete failed: ${error.message}` });
+      setActionBusy(false);
+    }
+  }
+
+  async function handleTogglePinned() {
+    if (!post?.id) return;
+    if (!isAuthenticated) {
+      setBanner({ type: 'error', message: 'Sign in to update posts.' });
+      return;
+    }
+    if (!canPinPosts) {
+      setBanner({ type: 'error', message: 'Only faculty accounts can pin posts.' });
+      return;
+    }
+
+    const nextPinned = !Boolean(post?.pinned);
+    setActionBusy(true);
+    try {
+      await setPostPinned(post.id, nextPinned);
+      setPost((prev) => (prev ? { ...prev, pinned: nextPinned } : prev));
+      setBanner({ type: 'success', message: nextPinned ? 'Post pinned.' : 'Post unpinned.' });
+    } catch (error) {
+      setBanner({ type: 'error', message: `Post update failed: ${error.message}` });
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
   function openVolunteerEnrollment() {
     if (!isAuthenticated) {
       setBanner({ type: 'error', message: 'Sign in to enroll as a volunteer.' });
@@ -493,6 +579,17 @@ export default function PostDetailsPage() {
         />
       )}
 
+      <PostEditModal
+        open={editOpen}
+        post={post}
+        onClose={() => setEditOpen(false)}
+        onSaved={(updatedPost) => {
+          if (!updatedPost?.id) return;
+          setPost(updatedPost);
+        }}
+        onFeedback={setBanner}
+      />
+
       <section className={`panel post-details-panel${isEventPost ? ' is-event-post' : ''}`}>
         <div className="post-details-top-row">
           <button className="post-back-btn" type="button" onClick={() => navigate(-1)}>
@@ -535,9 +632,50 @@ export default function PostDetailsPage() {
                   <small>{formatDate(post?.createdAt)}</small>
                 </div>
               </div>
-              {post?.status && (
-                <span className="pill">{toTitleCase(post.status)}</span>
-              )}
+              <div className="post-card-header-tools">
+                <div className="pill-row">
+                  {post?.status && (
+                    <span className="pill">{toTitleCase(post.status)}</span>
+                  )}
+                  {post?.pinned && <span className="pill tone-pin">Pinned</span>}
+                </div>
+
+                {canManageCurrentPost && (
+                  <PostActionsMenu
+                    buttonLabel={`Open actions for ${getPostLabel(post)}`}
+                    menuLabel={`Post actions for ${getPostLabel(post)}`}
+                    actions={[
+                      {
+                        key: 'pin',
+                        label: post?.pinned ? 'Unpin' : 'Pin',
+                        hidden: !canPinPosts,
+                        disabled: actionBusy,
+                        onSelect: handleTogglePinned,
+                      },
+                      {
+                        key: 'edit',
+                        label: 'Edit',
+                        hidden: !isOwner,
+                        disabled: actionBusy,
+                        onSelect: () => setEditOpen(true),
+                      },
+                      {
+                        key: 'archive',
+                        label: 'Archive',
+                        disabled: actionBusy || isArchived,
+                        onSelect: handleArchivePost,
+                      },
+                      {
+                        key: 'delete',
+                        label: 'Delete',
+                        tone: 'danger',
+                        disabled: actionBusy,
+                        onSelect: handleDeletePost,
+                      },
+                    ]}
+                  />
+                )}
+              </div>
             </header>
 
             <h2 className="post-details-title">{postTitle}</h2>
